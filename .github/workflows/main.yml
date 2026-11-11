@@ -26,10 +26,12 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Unpack the project from voiceleaf-src.zip
+      - name: Unpack the project from the newest zip in the repository
         run: |
           mkdir -p app
-          unzip -o voiceleaf-src.zip -d app
+          ZIP=$(ls -t *.zip | head -1)
+          echo "using $ZIP"
+          unzip -o "$ZIP" -d app
           ls -la app
 
       - name: Create the Android shell
