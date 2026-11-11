@@ -40,6 +40,12 @@ jobs:
         working-directory: app
         run: python3 tool/patch_android.py
 
+      - name: Keep the audio recorder on a matching interface version
+        working-directory: app
+        run: |
+          grep -q "dependency_overrides" pubspec.yaml || printf '\ndependency_overrides:\n  record_platform_interface: 1.5.0\n' >> pubspec.yaml
+          tail -4 pubspec.yaml
+
       - name: Fetch packages
         working-directory: app
         run: flutter pub get
