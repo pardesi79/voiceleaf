@@ -1,0 +1,56 @@
+name: Build Voiceleaf APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  apk:
+    name: Build release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Unpack the project from voiceleaf-src.zip
+        run: |
+          mkdir -p app
+          unzip -o voiceleaf-src.zip -d app
+          ls -la app
+
+      - name: Create the Android shell
+        working-directory: app
+        run: flutter create --org com.voiceleaf --project-name voiceleaf .
+
+      - name: Set permissions, camera, TTS and the app name
+        working-directory: app
+        run: python3 tool/patch_android.py
+
+      - name: Fetch packages
+        working-directory: app
+        run: flutter pub get
+
+      - name: Build the APK
+        working-directory: app
+        run: flutter build apk --release --split-per-abi
+
+      - name: Hand back the APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: voiceleaf-apk
+          path: app/build/app/outputs/flutter-apk/*.apk
+          retention-days: 30
