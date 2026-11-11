@@ -1,0 +1,32 @@
+name: voiceleaf
+description: Offline accessible reader that turns photos, PDFs, Office files, text and web pages into audiobooks using any installed TTS engine.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_tts: ^4.2.0
+  file_picker: ^8.1.6
+  image_picker: ^1.1.2
+  google_mlkit_text_recognition: any
+  google_mlkit_translation: any
+  pdfx: ^2.9.2
+  archive: ^3.6.1
+  http: ^1.2.2
+  html: ^0.15.5
+  path_provider: ^2.1.5
+  shared_preferences: ^2.3.3
+  share_plus: ^10.1.4
+  record: ^5.2.0
+  audioplayers: ^6.1.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/ui_strings.json
+    - assets/ocr_test_en.png
+    - assets/ocr_test_hi.png
