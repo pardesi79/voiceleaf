@@ -26,34 +26,21 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Unpack the project from the newest zip in the repository
-        run: |
-          mkdir -p app
-          ZIP=$(ls -t *.zip | head -1)
-          echo "using $ZIP"
-          unzip -o "$ZIP" -d app
-          ls -la app
-
       - name: Create the Android shell
-        working-directory: app
         run: flutter create --org com.voiceleaf --project-name voiceleaf .
 
       - name: Set permissions, camera, TTS and the app name
-        working-directory: app
         run: python3 tool/patch_android.py
 
       - name: Keep the audio recorder plugin on a working version
-        working-directory: app
         run: |
           grep -q "dependency_overrides" pubspec.yaml || printf '\ndependency_overrides:\n  record_linux: 1.3.1\n' >> pubspec.yaml
           tail -3 pubspec.yaml
 
       - name: Fetch packages
-        working-directory: app
         run: flutter pub get
 
       - name: Raise the Android SDK level and add the text recognition scripts
-        working-directory: app
         run: |
           cat > /tmp/patch_gradle.py <<'PY'
           import os, re, pathlib, glob
@@ -142,12 +129,11 @@ jobs:
           python3 /tmp/patch_gradle.py
 
       - name: Build the APK
-        working-directory: app
         run: flutter build apk --release --split-per-abi
 
       - name: Hand back the APKs
         uses: actions/upload-artifact@v4
         with:
           name: voiceleaf-apk
-          path: app/build/app/outputs/flutter-apk/*.apk
+          path: build/app/outputs/flutter-apk/*.apk
           retention-days: 30
