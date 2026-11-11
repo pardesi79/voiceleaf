@@ -46,52 +46,98 @@ jobs:
           grep -q "dependency_overrides" pubspec.yaml || printf '\ndependency_overrides:\n  record_linux: 1.3.1\n' >> pubspec.yaml
           tail -3 pubspec.yaml
 
-      - name: Raise the Android SDK level and add the text recognition scripts
-        working-directory: app
-        run: |
-          cat > /tmp/patch2.py <<'PY'
-          import re, pathlib
-
-          p = pathlib.Path('android/app/build.gradle')
-          s = p.read_text()
-          s = re.sub(r'compileSdkVersion\s+(flutter\.compileSdkVersion|\d+)', 'compileSdkVersion 36', s, count=1)
-          s = re.sub(r'compileSdk\s*=\s*(flutter\.compileSdkVersion|\d+)', 'compileSdk = 36', s, count=1)
-
-          deps = (
-              "    implementation 'com.google.mlkit:text-recognition:16.0.1'\n"
-              "    implementation 'com.google.mlkit:text-recognition-devanagari:16.0.1'\n"
-              "    implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'\n"
-              "    implementation 'com.google.mlkit:text-recognition-japanese:16.0.1'\n"
-              "    implementation 'com.google.mlkit:text-recognition-korean:16.0.1'\n"
-          )
-          if 'text-recognition-devanagari' not in s:
-              m = re.search(r'dependencies\s*\{', s)
-              if m:
-                  s = s[:m.end()] + '\n' + deps + s[m.end():]
-          p.write_text(s)
-
-          root = pathlib.Path('android/build.gradle')
-          r = root.read_text()
-          if 'subprojects' not in r:
-              r += '''
-          subprojects {
-              afterEvaluate { project ->
-                  if (project.hasProperty('android')) {
-                      project.android {
-                          compileSdkVersion 36
-                      }
-                  }
-              }
-          }
-          '''
-              root.write_text(r)
-          print('gradle patched')
-          PY
-          python3 /tmp/patch2.py
-
       - name: Fetch packages
         working-directory: app
         run: flutter pub get
+
+      - name: Raise the Android SDK level and add the text recognition scripts
+        working-directory: app
+        run: |
+          cat > /tmp/patch_gradle.py <<'PY'
+          import os, re, pathlib, glob
+
+          def bump(text):
+              text = re.sub(r'compileSdkVersion\s+(flutter\.compileSdkVersion|\d+)', 'compileSdkVersion 36', text)
+              text = re.sub(r'compileSdk\s*=\s*(flutter\.compileSdkVersion|\d+)', 'compileSdk = 36', text)
+              text = re.sub(r'compileSdk\s+(flutter\.compileSdkVersion|\d+)', 'compileSdk 36', text)
+              return text
+
+          fixed = 0
+          for g in glob.glob(os.path.expanduser('~/.pub-cache/hosted/pub.dev/*/android/build.gradle*')):
+              p = pathlib.Path(g)
+              try:
+                  s = p.read_text()
+              except Exception:
+                  continue
+              n = bump(s)
+              if n != s:
+                  p.write_text(n)
+                  fixed += 1
+          print('plugin gradle files raised:', fixed)
+
+          app = None
+          for name in ('android/app/build.gradle.kts', 'android/app/build.gradle'):
+              if os.path.exists(name):
+                  app = pathlib.Path(name)
+                  break
+          if app is None:
+              raise SystemExit('app gradle not found')
+
+          s = app.read_text()
+          s = bump(s)
+
+          kts = app.name.endswith('.kts')
+          if kts:
+              extra = """
+          android {
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      isShrinkResources = false
+                  }
+              }
+          }
+          """
+              deps = """
+          dependencies {
+              implementation("com.google.mlkit:text-recognition:16.0.1")
+              implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")
+              implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+              implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
+              implementation("com.google.mlkit:text-recognition-korean:16.0.1")
+          }
+          """
+          else:
+              extra = """
+          android {
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      shrinkResources false
+                  }
+              }
+          }
+          """
+              deps = """
+          dependencies {
+              implementation 'com.google.mlkit:text-recognition:16.0.1'
+              implementation 'com.google.mlkit:text-recognition-devanagari:16.0.1'
+              implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+              implementation 'com.google.mlkit:text-recognition-japanese:16.0.1'
+              implementation 'com.google.mlkit:text-recognition-korean:16.0.1'
+          }
+          """
+
+          if 'text-recognition-devanagari' not in s:
+              s += deps
+          if 'isMinifyEnabled = false' not in s and 'minifyEnabled false' not in s:
+              s += extra
+
+          app.write_text(s)
+          print('patched', app)
+          print('compileSdk now:', [l.strip() for l in s.split('\n') if 'compileSdk' in l])
+          PY
+          python3 /tmp/patch_gradle.py
 
       - name: Build the APK
         working-directory: app
