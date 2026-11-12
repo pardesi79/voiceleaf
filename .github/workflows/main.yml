@@ -378,19 +378,25 @@ jobs:
               for i in range(min(n, len(samples))):
                   samples[-1 - i] *= i / n
               return samples
-          def paper_flip(sec=0.18):
-              """A soft paper swish. Bright noise only, no low hum, so it never thuds."""
+          def paper_flip(sec=0.34):
+              """A real page turn: band-limited noise, quick rise, long fall, and a
+              second smaller crinkle near the end."""
               n = int(RATE * sec)
-              random.seed(11)
+              random.seed(23)
               out = []
-              lp = 0.0
+              lp1 = 0.0
+              lp2 = 0.0
               for i in range(n):
                   t = i / RATE
                   x = t / sec
-                  env = (x ** 0.5) * math.exp(-7.0 * x)
-                  lp = lp + 0.45 * (random.uniform(-1, 1) - lp)
-                  out.append(lp * env * 0.8)
-              return fade(out, 5)
+                  env = (x ** 0.35) * math.exp(-4.2 * x)
+                  env += 0.35 * math.exp(-((x - 0.62) ** 2) / 0.004)
+                  w = random.uniform(-1, 1)
+                  lp1 = lp1 + 0.25 * (w - lp1)
+                  hp = w - lp1
+                  lp2 = lp2 + 0.55 * (hp - lp2)
+                  out.append(lp2 * env * 3.1)
+              return fade(out, 6)
           def two_tone():
               n1 = int(RATE * 0.28)
               a = [math.sin(2 * math.pi * 880 * (i / RATE)) * math.exp(-9 * (i / RATE)) * 0.5 for i in range(n1)]
@@ -591,6 +597,10 @@ jobs:
           if old in s:
               s = s.replace(old, new)
               changed.append('extractors: read halves')
+          if 'width: w * 3,' not in s:
+              s = s.replace('width: w * 2,', 'width: w * 3,')
+              s = s.replace('height: h * 2,', 'height: h * 3,')
+              changed.append('extractors: 3x render')
           ex.write_text(s)
           h = pathlib.Path('lib/home_page.dart')
           s = h.read_text()
