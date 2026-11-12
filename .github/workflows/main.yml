@@ -1470,6 +1470,16 @@ jobs:
               ex2.write_text(s2)
               changed.append('exporter: archive v4')
 
+
+          # archive v4 replaced the true/false flag with a compression type
+          ex3 = pathlib.Path('lib/exporter.dart')
+          s3 = ex3.read_text()
+          if 'f.compress = compress;' in s3:
+              s3 = s3.replace('    f.compress = compress;',
+                              '    f.compression = compress ? CompressionType.deflate : CompressionType.none;')
+              ex3.write_text(s3)
+              changed.append('exporter: compression type')
+
           print('patched:', ', '.join(changed))
           PY
           python3 /tmp/patch_pdfrx.py
