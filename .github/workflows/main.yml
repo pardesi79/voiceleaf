@@ -34,6 +34,22 @@ jobs:
       - name: Set permissions, camera, TTS and the app name
         run: python3 tool/patch_android.py
 
+      - name: Use a stable signing key so a new build installs over the old app
+        run: |
+          mkdir -p android/app
+          if [ ! -f android/app/voiceleaf.jks ]; then
+            keytool -genkeypair -v \
+              -keystore android/app/voiceleaf.jks \
+              -storepass voiceleaf123 -keypass voiceleaf123 \
+              -alias voiceleaf -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Voiceleaf, OU=App, O=Voiceleaf, L=Delhi, ST=Delhi, C=IN"
+            git config user.name "voiceleaf-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add -f android/app/voiceleaf.jks
+            git commit -m "Add a stable signing key so updates install over the old app [skip ci]" || true
+            git push || echo "could not push the key"
+          fi
+
       - name: Keep the audio recorder plugin on a working version
         run: |
           grep -q "dependency_overrides" pubspec.yaml || printf '\ndependency_overrides:\n  record_linux: 1.3.1\n' >> pubspec.yaml
@@ -81,10 +97,19 @@ jobs:
           if kts:
               extra = """
           android {
+              signingConfigs {
+                  create("release") {
+                      storeFile = file("voiceleaf.jks")
+                      storePassword = "voiceleaf123"
+                      keyAlias = "voiceleaf"
+                      keyPassword = "voiceleaf123"
+                  }
+              }
               buildTypes {
                   release {
                       isMinifyEnabled = false
                       isShrinkResources = false
+                      signingConfig = signingConfigs.getByName("release")
                   }
               }
           }
@@ -101,10 +126,19 @@ jobs:
           else:
               extra = """
           android {
+              signingConfigs {
+                  release {
+                      storeFile file("voiceleaf.jks")
+                      storePassword "voiceleaf123"
+                      keyAlias "voiceleaf"
+                      keyPassword "voiceleaf123"
+                  }
+              }
               buildTypes {
                   release {
                       minifyEnabled false
                       shrinkResources false
+                      signingConfig signingConfigs.release
                   }
               }
           }
@@ -131,7 +165,7 @@ jobs:
           python3 /tmp/patch_gradle.py
 
       - name: Build the APK
-        run: flutter build apk --release --split-per-abi
+        run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
       - name: Put the phone APK where it can be downloaded directly
         env:
