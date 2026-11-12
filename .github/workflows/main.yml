@@ -1290,42 +1290,6 @@ jobs:
           PY
           python3 /tmp/patch_rate.py
 
-      - name: Read real text from PDFs that already have it
-        run: |
-          cat > /tmp/patch_textlayer.py <<'PY'
-          import pathlib
-
-          changed = []
-          ex = pathlib.Path('lib/extractors.dart')
-          s = ex.read_text()
-
-          old = """        final page = await doc.getPage(i);
-                  final w = page.width;
-                  final h = page.height;"""
-          new = """        final page = await doc.getPage(i);
-                  // A PDF that already carries real text needs no OCR at all: read the
-                  // text exactly as it is, which is also far quicker.
-                  var layer = '';
-                  try {
-                    layer = (await page.text).text.trim();
-                  } catch (_) {}
-                  if (layer.length > 40) {
-                    onProgress(i - from + 1, total, layer.length);
-                    pages.addAll(paginate(pageNumbers ? 'Page $i.\\n$layer' : layer));
-                    await page.close();
-                    continue;
-                  }
-                  final w = page.width;
-                  final h = page.height;"""
-          if old in s and 'page.text' not in s:
-              s = s.replace(old, new, 1)
-              changed.append('extractors: read the text layer first')
-
-          ex.write_text(s)
-          print('patched:', ', '.join(changed) if changed else 'nothing')
-          PY
-          python3 /tmp/patch_textlayer.py
-
       - name: Clearer names for the two engine buttons
         run: |
           cat > /tmp/patch_rename.py <<'PY'
@@ -1349,6 +1313,156 @@ jobs:
           print('patched:', len(changed))
           PY
           python3 /tmp/patch_rename.py
+
+      - name: Read real text from PDFs, with the newer PDF library
+        run: |
+          cat > /tmp/patch_pdfrx.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          # 1. swap the PDF library
+          p = pathlib.Path('pubspec.yaml')
+          s = p.read_text()
+          if 'pdfx:' in s:
+              s = s.replace('  pdfx: ^2.9.2', '  pdfrx: ^2.12.0', 1)
+              p.write_text(s)
+              changed.append('pubspec: pdfrx')
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # 2. imports
+          s = s.replace("import 'package:pdfx/pdfx.dart';", "import 'package:pdfrx/pdfrx.dart';", 1)
+          if "import 'dart:async';" not in s:
+              s = s.replace("import 'dart:convert';", "import 'dart:async';\nimport 'dart:convert';", 1)
+              changed.append('extractors: async import')
+
+          # 3. page count + a helper that turns a rendered page into PNG bytes
+          old_count = """  static Future<int> pdfPageCount(String path) async {
+              final doc = await PdfDocument.openFile(path);
+              final n = doc.pagesCount;
+              await doc.close();
+              return n;
+            }"""
+          new_count = """  static Future<int> pdfPageCount(String path) async {
+              final doc = await PdfDocument.openFile(path);
+              final n = doc.pages.length;
+              await doc.close();
+              return n;
+            }
+
+            /// Turns one rendered page into PNG bytes, which both engines understand.
+            static Future<Uint8List> _pagePng(PdfPage page) async {
+              final img = await page.render(
+                fullWidth: (page.width * 2).round(),
+                fullHeight: (page.height * 2).round(),
+              );
+              if (img == null) return Uint8List(0);
+              final bgra = img.pixels;
+              final rgba = Uint8List(bgra.length);
+              for (var i = 0; i + 3 < bgra.length; i += 4) {
+                rgba[i] = bgra[i + 2];
+                rgba[i + 1] = bgra[i + 1];
+                rgba[i + 2] = bgra[i];
+                rgba[i + 3] = bgra[i + 3];
+              }
+              final done = Completer<ui.Image>();
+              ui.decodeImageFromPixels(
+                  rgba, img.width, img.height, ui.PixelFormat.rgba8888,
+                  (image) => done.complete(image));
+              final image = await done.future;
+              final data = await image.toByteData(format: ui.ImageByteFormat.png);
+              return data?.buffer.asUint8List() ?? Uint8List(0);
+            }"""
+          if old_count in s:
+              s = s.replace(old_count, new_count, 1)
+              changed.append('extractors: page count + png')
+
+          # 4. the whole pdf() function
+          start = s.index('  static Future<List<String>> pdf(String path, String mode, int from, int to,')
+          end = s.index('\n  }\n', s.index('    return pages;', start)) + len('\n  }\n')
+          new_pdf = '''  static Future<List<String>> pdf(String path, String mode, int from, int to,
+                void Function(int done, int total, int chars) onProgress,
+                {bool pageNumbers = false}) async {
+              final doc = await PdfDocument.openFile(path);
+              final tmp = await getTemporaryDirectory();
+              final pages = <String>[];
+              try {
+                final total = to - from + 1;
+                var empty = 0;
+                for (var i = from; i <= to; i++) {
+                  onProgress(i - from + 1, total, -1);
+                  final page = doc.pages[i - 1];
+                  // A PDF that already carries real text needs no OCR at all: read it
+                  // exactly as it is, which is also far quicker.
+                  var layer = '';
+                  try {
+                    layer = (await page.loadText())?.fullText.trim() ?? '';
+                  } catch (_) {}
+                  if (layer.length > 40) {
+                    onProgress(i - from + 1, total, layer.length);
+                    pages.addAll(paginate(pageNumbers ? 'Page $i.\\n$layer' : layer));
+                    continue;
+                  }
+                  final w = page.width;
+                  final h = page.height;
+                  final bytes = await _pagePng(page);
+                  if (bytes.isEmpty) {
+                    empty++;
+                    onProgress(i - from + 1, total, -2);
+                    continue;
+                  }
+                  final f = File('${tmp.path}/pg_$i.png');
+                  await f.writeAsBytes(bytes);
+                  String text;
+                  if (w > h) {
+                    // A scanned book often shows two pages side by side. Read each half
+                    // on its own, otherwise the two pages get mixed together line by line.
+                    final codec = await ui.instantiateImageCodec(bytes);
+                    final frame = await codec.getNextFrame();
+                    final full = frame.image;
+                    final half = full.width ~/ 2;
+                    final lb = await _cropHalf(full, 0, half);
+                    final rb = await _cropHalf(full, half, full.width - half);
+                    final lf = File('${tmp.path}/pg_${i}_l.png');
+                    final rf = File('${tmp.path}/pg_${i}_r.png');
+                    await lf.writeAsBytes(lb);
+                    await rf.writeAsBytes(rb);
+                    final lt = await _pageText(lf, mode);
+                    final rt = await _pageText(rf, mode);
+                    await lf.delete();
+                    await rf.delete();
+                    text = '$lt\\n$rt';
+                  } else {
+                    text = await _pageText(f, mode);
+                  }
+                  await f.delete();
+                  onProgress(i - from + 1, total, text.trim().length);
+                  if (text.trim().isEmpty) {
+                    empty++;
+                  } else {
+                    pages.addAll(paginate(pageNumbers ? 'Page $i.\\n$text' : text));
+                  }
+                }
+                if (pages.isEmpty) {
+                  throw Exception(
+                      'No text was found in this PDF. $empty page(s) were read but '
+                      'came back empty. Try Take Photo instead, or set the text '
+                      'recognition language in Preferences.');
+                }
+              } finally {
+                await doc.close();
+              }
+              return pages;
+            }
+          '''
+          s = s[:start] + new_pdf + s[end:]
+          changed.append('extractors: pdf rewritten for pdfrx')
+          ex.write_text(s)
+          print('patched:', ', '.join(changed))
+          PY
+          python3 /tmp/patch_pdfrx.py
 
       - name: Fetch packages
         run: flutter pub get
