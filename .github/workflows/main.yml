@@ -490,6 +490,96 @@ jobs:
           PY
           python3 /tmp/patch_ocr.py
 
+      - name: Read a two-page scan as two separate pictures
+        run: |
+          cat > /tmp/patch_spread2.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # imports for image cropping
+          if "import 'dart:ui' as ui;" not in s:
+              s = s.replace("import 'dart:io';", "import 'dart:io';\nimport 'dart:ui' as ui;", 1)
+              changed.append('extractors: ui import')
+
+          # helper that cuts the picture in half
+          if '_cropHalf' not in s:
+              s = s.replace("  static int _letters(String t) {",
+          """  /// Cuts a slice out of a picture and gives it back as PNG bytes.
+            static Future<Uint8List> _cropHalf(ui.Image src, int x, int w) async {
+              final rec = ui.PictureRecorder();
+              final canvas = ui.Canvas(rec);
+              canvas.drawImageRect(
+                src,
+                ui.Rect.fromLTWH(x.toDouble(), 0, w.toDouble(), src.height.toDouble()),
+                ui.Rect.fromLTWH(0, 0, w.toDouble(), src.height.toDouble()),
+                ui.Paint(),
+              );
+              final pic = rec.endRecording();
+              final out = await pic.toImage(w, src.height);
+              final data = await out.toByteData(format: ui.ImageByteFormat.png);
+              return data!.buffer.asUint8List();
+            }
+
+            static int _letters(String t) {""", 1)
+              changed.append('extractors: crop helper')
+
+          old = "        final text = await ocrFile(f, mode, twoPages: w > h);"
+          new = """        String text;
+                  if (w > h) {
+                    // A scanned book often shows two pages side by side. Read each half
+                    // on its own, otherwise the two pages get mixed together line by line.
+                    final codec = await ui.instantiateImageCodec(img.bytes);
+                    final frame = await codec.getNextFrame();
+                    final full = frame.image;
+                    final half = full.width ~/ 2;
+                    final lb = await _cropHalf(full, 0, half);
+                    final rb = await _cropHalf(full, half, full.width - half);
+                    final lf = File('${tmp.path}/pg_${i}_l.png');
+                    final rf = File('${tmp.path}/pg_${i}_r.png');
+                    await lf.writeAsBytes(lb);
+                    await rf.writeAsBytes(rb);
+                    final lt = await ocrFile(lf, mode);
+                    final rt = await ocrFile(rf, mode);
+                    await lf.delete();
+                    await rf.delete();
+                    text = '$lt\\n$rt';
+                  } else {
+                    text = await ocrFile(f, mode);
+                  }"""
+          if old in s:
+              s = s.replace(old, new)
+              changed.append('extractors: read halves')
+          ex.write_text(s)
+
+          # page range dialog when a file is opened from another app
+          h = pathlib.Path('lib/home_page.dart')
+          s = h.read_text()
+          old_pdf = """      if (ext == 'pdf') {
+                  final n = await Extractors.pdfPageCount(path);
+                  pages = await Extractors.pdf(path, AppPrefs.I.ocr, 1, n, (a, b, c) {});
+                }"""
+          new_pdf = """      if (ext == 'pdf') {
+                  final n = await Extractors.pdfPageCount(path);
+                  if (!mounted) return;
+                  final range = await Navigator.push<List<int>>(context,
+                      MaterialPageRoute(builder: (_) => ChoosePagesPage(total: n)));
+                  if (range == null) return;
+                  pages = await Extractors.pdf(
+                      path, AppPrefs.I.ocr, range[0], range[1], (a, b, c) {});
+                }"""
+          if old_pdf in s:
+              s = s.replace(old_pdf, new_pdf)
+              h.write_text(s)
+              changed.append('home_page: page range')
+
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_spread2.py
+
       - name: Fetch packages
         run: flutter pub get
 
