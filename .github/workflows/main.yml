@@ -39,7 +39,6 @@ jobs:
         run: |
           cat > /tmp/patch_openwith.py <<'PY'
           import os, pathlib, re
-
           changed = []
           PKG = 'com.voiceleaf.voiceleaf'
           MIME = '''                <data android:mimeType="application/pdf"/>
@@ -50,31 +49,24 @@ jobs:
                           <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation"/>
                           <data android:mimeType="application/vnd.ms-excel"/>
                           <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"/>'''
-
-          # ---------- 1. MainActivity: take the file, copy it, remember the path
           kt = pathlib.Path('android/app/src/main/kotlin/%s/MainActivity.kt' % PKG.replace('.', '/'))
           if kt.parent.exists() or pathlib.Path('android/app').exists():
               kt.parent.mkdir(parents=True, exist_ok=True)
               kt.write_text('''package %s
-
           import android.content.Intent
           import android.net.Uri
           import android.os.Bundle
           import io.flutter.embedding.android.FlutterActivity
           import java.io.File
-
           class MainActivity : FlutterActivity() {
-
               override fun onCreate(savedInstanceState: Bundle?) {
                   handleIntent(intent)
                   super.onCreate(savedInstanceState)
               }
-
               override fun onNewIntent(intent: Intent) {
                   super.onNewIntent(intent)
                   handleIntent(intent)
               }
-
               private fun handleIntent(intent: Intent?) {
                   if (intent == null) return
                   val uri: Uri? = when (intent.action) {
@@ -99,10 +91,8 @@ jobs:
                           .putString("flutter.pending_file", out.absolutePath)
                           .apply()
                   } catch (e: Exception) {
-                      // If anything goes wrong the app still opens normally.
                   }
               }
-
               private fun queryName(uri: Uri): String? {
                   if (uri.scheme == "file") return uri.lastPathSegment
                   try {
@@ -117,8 +107,6 @@ jobs:
           }
           ''' % PKG)
               changed.append('MainActivity.kt')
-
-          # ---------- 2. manifest: appear in "Open with" and in Share
           mf = pathlib.Path('android/app/src/main/AndroidManifest.xml')
           if mf.exists():
               xml = mf.read_text()
@@ -145,8 +133,6 @@ jobs:
                                r'\1 android:launchMode="singleTop"', xml, count=1)
                   mf.write_text(xml)
                   changed.append('AndroidManifest.xml')
-
-          # ---------- 3. Dart: pick up the file the app was opened with
           m = pathlib.Path('lib/main.dart')
           s = m.read_text()
           if 'gPendingFile' not in s:
@@ -158,8 +144,6 @@ jobs:
               s = s.replace("home: const HomePage(),", "home: HomePage(initialFile: gPendingFile),", 1)
               m.write_text(s)
               changed.append('main.dart')
-
-          # ---------- 4. HomePage: read that file
           h = pathlib.Path('lib/home_page.dart')
           s = h.read_text()
           if 'initialFile' not in s:
@@ -183,8 +167,6 @@ jobs:
                 WidgetsBinding.instance.addPostFrameCallback((_) => _openIncoming(f));
               }
             }
-
-            /// A PDF, DOCX or text file handed to us by another app's "Open with".
             Future<void> _openIncoming(String path) async {
               final name = path.split('/').last;
               final title = name.contains('.') ? name.substring(0, name.lastIndexOf('.')) : name;
@@ -232,7 +214,6 @@ jobs:
                   s = s.replace("import 'create_flow.dart';", "import 'app_prefs.dart';\nimport 'create_flow.dart';\nimport 'extractors.dart';", 1)
               h.write_text(s)
               changed.append('home_page.dart')
-
           print('patched:', ', '.join(changed) if changed else 'nothing')
           PY
           python3 /tmp/patch_openwith.py
@@ -262,9 +243,7 @@ jobs:
         run: |
           cat > /tmp/make_sounds.py <<'PY'
           import math, os, random, struct, wave
-
           RATE = 22050
-
           def write(name, samples):
               path = os.path.join('assets', name)
               os.makedirs('assets', exist_ok=True)
@@ -274,7 +253,6 @@ jobs:
                   w.setframerate(RATE)
                   w.writeframes(b''.join(struct.pack('<h', int(max(-1, min(1, s)) * 30000)) for s in samples))
               print('wrote', path, round(len(samples) / RATE, 3), 's')
-
           def fade(samples, ms=4):
               n = int(RATE * ms / 1000)
               for i in range(min(n, len(samples))):
@@ -282,9 +260,7 @@ jobs:
               for i in range(min(n, len(samples))):
                   samples[-1 - i] *= i / n
               return samples
-
           def paper_flip(sec=0.24):
-              """A soft paper swish: filtered noise that opens and closes, no hard edge."""
               n = int(RATE * sec)
               random.seed(11)
               out = []
@@ -297,14 +273,12 @@ jobs:
                   body = lp * 1.7 + 0.22 * math.sin(2 * math.pi * 165 * t)
                   out.append(body * env * 0.95)
               return fade(out, 8)
-
           def two_tone():
               n1 = int(RATE * 0.28)
               a = [math.sin(2 * math.pi * 880 * (i / RATE)) * math.exp(-9 * (i / RATE)) * 0.5 for i in range(n1)]
               n2 = int(RATE * 0.55)
               b = [math.sin(2 * math.pi * 1318 * (i / RATE)) * math.exp(-6 * (i / RATE)) * 0.45 for i in range(n2)]
               return fade(a) + [0.0] * int(RATE * 0.05) + fade(b)
-
           def soft_tick(freq=480.0, sec=0.06, amp=0.22):
               n = int(RATE * sec)
               out = []
@@ -313,11 +287,8 @@ jobs:
                   env = math.exp(-45 * t)
                   out.append(math.sin(2 * math.pi * freq * t) * env * amp)
               return fade(out, 4)
-
           def working_loop():
-              """Quiet, slow tick so it can run for minutes without getting annoying."""
               return soft_tick(480, 0.06, 0.22) + [0.0] * int(RATE * 1.34)
-
           def blip():
               n = int(RATE * 0.12)
               out = []
@@ -326,7 +297,6 @@ jobs:
                   f = 980 - 380 * (t / 0.12)
                   out.append(math.sin(2 * math.pi * f * t) * math.exp(-24 * t) * 0.5)
               return fade(out)
-
           write('snd_pageflip.wav', paper_flip())
           write('snd_complete.wav', two_tone())
           write('snd_paste.wav', blip())
@@ -339,43 +309,52 @@ jobs:
         run: |
           cat > /tmp/patch_sounds.py <<'PY'
           import pathlib
-
           changed = []
-
-          # 1. bundle the assets folder
           p = pathlib.Path('pubspec.yaml')
           s = p.read_text()
           if '- assets/\n' not in s:
               s = s.replace('  assets:\n', '  assets:\n    - assets/\n', 1)
               p.write_text(s)
               changed.append('pubspec.yaml')
-
-          # 2. the sound helper
           w = pathlib.Path('lib/widgets.dart')
           s = w.read_text()
           if 'class Sounds' not in s:
               s += '''
-          /// Short interface sounds. The wav files are generated at build time.
           class Sounds {
             static final AudioPlayer _one = AudioPlayer();
             static final AudioPlayer _loop = AudioPlayer();
-
+            static bool _ready = false;
+            static Future<void> _init() async {
+              if (_ready) return;
+              _ready = true;
+              final ctx = AudioContext(
+                android: AudioContextAndroid(
+                  contentType: AndroidContentType.sonification,
+                  usageType: AndroidUsageType.assistanceSonification,
+                  audioFocus: AndroidAudioFocus.none,
+                ),
+              );
+              try {
+                await _one.setAudioContext(ctx);
+                await _loop.setAudioContext(ctx);
+              } catch (_) {}
+            }
             static Future<void> play(String name) async {
               try {
+                await _init();
                 await _loop.stop();
                 await _one.stop();
                 await _one.play(AssetSource('snd_$name.wav'), volume: 1.0);
               } catch (_) {}
             }
-
             static Future<void> loop(String name) async {
               try {
+                await _init();
                 await _loop.stop();
                 await _loop.setReleaseMode(ReleaseMode.loop);
                 await _loop.play(AssetSource('snd_$name.wav'), volume: 0.55);
               } catch (_) {}
             }
-
             static Future<void> stopLoop() async {
               try {
                 await _loop.stop();
@@ -388,8 +367,6 @@ jobs:
                                 "import 'package:audioplayers/audioplayers.dart';\nimport 'package:flutter/material.dart';", 1)
               w.write_text(s)
               changed.append('lib/widgets.dart')
-
-          # 3. page turn sound
           pp = pathlib.Path('lib/player_page.dart')
           s = pp.read_text()
           n = s.count('SystemSound.play(SystemSoundType.click);')
@@ -397,14 +374,11 @@ jobs:
               s = s.replace('SystemSound.play(SystemSoundType.click);', "Sounds.play('pageflip');")
               pp.write_text(s)
               changed.append('lib/player_page.dart (%d)' % n)
-
-          # 4. completion sound, and a quiet loop while pages are being processed
           cf = pathlib.Path('lib/create_flow.dart')
           s = cf.read_text()
           if 'SystemSound.play(SystemSoundType.alert);' in s:
               s = s.replace('SystemSound.play(SystemSoundType.alert);', "Sounds.play('complete');")
               changed.append('create_flow: complete')
-
           old_init = """  @override
             void initState() {
               super.initState();
@@ -419,7 +393,6 @@ jobs:
           if old_init in s and "Sounds.loop('working')" not in s:
               s = s.replace(old_init, new_init)
               changed.append('create_flow: loop start')
-
           old_dispose = """  @override
             void dispose() {
               voice?.stop();
@@ -434,85 +407,30 @@ jobs:
           if old_dispose in s and 'Sounds.stopLoop();' not in s:
               s = s.replace(old_dispose, new_dispose)
               changed.append('create_flow: loop stop')
-
           cf.write_text(s)
           print('patched:', ', '.join(changed) if changed else 'nothing')
           PY
           python3 /tmp/patch_sounds.py
 
-      - name: Read two-page scans one page at a time
-        run: |
-          cat > /tmp/patch_ocr.py <<'PY'
-          import pathlib
-
-          changed = []
-
-          ex = pathlib.Path('lib/extractors.dart')
-          s = ex.read_text()
-
-          old_sig = "  static Future<String> ocrFile(File f, String mode) async {"
-          new_sig = "  static Future<String> ocrFile(File f, String mode, {bool twoPages = false}) async {"
-          if old_sig in s and new_sig not in s:
-              s = s.replace(old_sig, new_sig)
-              changed.append('extractors: signature')
-
-          old_read = """        final t = await rec.processImage(InputImage.fromFile(f));
-                  return t.text;"""
-          new_read = """        final res = await rec.processImage(InputImage.fromFile(f));
-                  if (!twoPages || res.blocks.isEmpty) return res.text;
-                  // A scanned book often shows two pages side by side. Reading straight
-                  // across mixes the two pages, so read the left page, then the right one.
-                  var maxRight = 0.0;
-                  for (final b in res.blocks) {
-                    if (b.boundingBox.right > maxRight) maxRight = b.boundingBox.right;
-                  }
-                  final mid = maxRight / 2;
-                  final sorted = res.blocks.toList()
-                    ..sort((a, b) {
-                      final ac = a.boundingBox.center.dx < mid ? 0 : 1;
-                      final bc = b.boundingBox.center.dx < mid ? 0 : 1;
-                      if (ac != bc) return ac.compareTo(bc);
-                      return a.boundingBox.top.compareTo(b.boundingBox.top);
-                    });
-                  return sorted.map((b) => b.text).join('\\n');"""
-          if old_read in s:
-              s = s.replace(old_read, new_read)
-              changed.append('extractors: block order')
-
-          old_call = "        final text = await ocrFile(f, mode);"
-          new_call = "        final text = await ocrFile(f, mode, twoPages: w > h);"
-          if old_call in s:
-              s = s.replace(old_call, new_call)
-              changed.append('extractors: spread flag')
-
-          ex.write_text(s)
-          print('patched:', ', '.join(changed) if changed else 'nothing')
-          PY
-          python3 /tmp/patch_ocr.py
-
       - name: Read a two-page scan as two separate pictures
         run: |
-          cat > /tmp/patch_spread2.py <<'PY'
+          cat > /tmp/patch_spread3.py <<'PY'
           import pathlib
-
           changed = []
-
           ex = pathlib.Path('lib/extractors.dart')
           s = ex.read_text()
-
-          # imports for image cropping
           if "import 'dart:ui' as ui;" not in s:
-              s = s.replace("import 'dart:io';", "import 'dart:io';\nimport 'dart:ui' as ui;", 1)
+              s = s.replace("import 'dart:io';", "import 'dart:io';\nimport 'dart:typed_data';\nimport 'dart:ui' as ui;", 1)
               changed.append('extractors: ui import')
-
-          # helper that cuts the picture in half
+          elif "import 'dart:typed_data';" not in s:
+              s = s.replace("import 'dart:ui' as ui;", "import 'dart:typed_data';\nimport 'dart:ui' as ui;", 1)
+              changed.append('extractors: typed_data import')
           if '_cropHalf' not in s:
               s = s.replace("  static int _letters(String t) {",
-          """  /// Cuts a slice out of a picture and gives it back as PNG bytes.
-            static Future<Uint8List> _cropHalf(ui.Image src, int x, int w) async {
-              final rec = ui.PictureRecorder();
-              final canvas = ui.Canvas(rec);
-              canvas.drawImageRect(
+          """  static Future<Uint8List> _cropHalf(ui.Image src, int x, int w) async {
+            final rec = ui.PictureRecorder();
+            final canvas = ui.Canvas(rec);
+            canvas.drawImageRect(
                 src,
                 ui.Rect.fromLTWH(x.toDouble(), 0, w.toDouble(), src.height.toDouble()),
                 ui.Rect.fromLTWH(0, 0, w.toDouble(), src.height.toDouble()),
@@ -523,15 +441,11 @@ jobs:
               final data = await out.toByteData(format: ui.ImageByteFormat.png);
               return data!.buffer.asUint8List();
             }
-
             static int _letters(String t) {""", 1)
               changed.append('extractors: crop helper')
-
-          old = "        final text = await ocrFile(f, mode, twoPages: w > h);"
+          old = "        final text = await ocrFile(f, mode);"
           new = """        String text;
                   if (w > h) {
-                    // A scanned book often shows two pages side by side. Read each half
-                    // on its own, otherwise the two pages get mixed together line by line.
                     final codec = await ui.instantiateImageCodec(img.bytes);
                     final frame = await codec.getNextFrame();
                     final full = frame.image;
@@ -554,8 +468,6 @@ jobs:
               s = s.replace(old, new)
               changed.append('extractors: read halves')
           ex.write_text(s)
-
-          # page range dialog when a file is opened from another app
           h = pathlib.Path('lib/home_page.dart')
           s = h.read_text()
           old_pdf = """      if (ext == 'pdf') {
@@ -575,10 +487,9 @@ jobs:
               s = s.replace(old_pdf, new_pdf)
               h.write_text(s)
               changed.append('home_page: page range')
-
           print('patched:', ', '.join(changed) if changed else 'nothing')
           PY
-          python3 /tmp/patch_spread2.py
+          python3 /tmp/patch_spread3.py
 
       - name: Fetch packages
         run: flutter pub get
