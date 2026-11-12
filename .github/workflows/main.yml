@@ -55,6 +55,142 @@ jobs:
           grep -q "dependency_overrides" pubspec.yaml || printf '\ndependency_overrides:\n  record_linux: 1.3.1\n' >> pubspec.yaml
           tail -3 pubspec.yaml
 
+      - name: Make the action sounds
+        run: |
+          cat > /tmp/make_sounds.py <<'PY'
+          import math, os, random, struct, wave
+
+          RATE = 22050
+          random.seed(7)
+
+          def write(name, samples):
+              path = os.path.join('assets', name)
+              os.makedirs('assets', exist_ok=True)
+              with wave.open(path, 'w') as w:
+                  w.setnchannels(1)
+                  w.setsampwidth(2)
+                  w.setframerate(RATE)
+                  w.writeframes(b''.join(struct.pack('<h', int(max(-1, min(1, s)) * 30000)) for s in samples))
+              print('wrote', path, len(samples) / RATE, 's')
+
+          def silence(sec):
+              return [0.0] * int(RATE * sec)
+
+          def click(sec=0.09, tone=1400, noise=0.5):
+              n = int(RATE * sec)
+              out = []
+              for i in range(n):
+                  t = i / RATE
+                  env = math.exp(-38 * t)
+                  s = math.sin(2 * math.pi * tone * t) * (1 - noise) + random.uniform(-1, 1) * noise
+                  out.append(s * env * 0.6)
+              return out
+
+          def flip(sec=0.16):
+              n = int(RATE * sec)
+              out = []
+              for i in range(n):
+                  t = i / RATE
+                  env = math.exp(-14 * t)
+                  out.append(random.uniform(-1, 1) * env * 0.5 + math.sin(2 * math.pi * 220 * t) * env * 0.2)
+              return out
+
+          def tone(freq, sec, decay=6.0, amp=0.5):
+              n = int(RATE * sec)
+              return [math.sin(2 * math.pi * freq * (i / RATE)) * math.exp(-decay * (i / RATE)) * amp for i in range(n)]
+
+          def chime():
+              a = tone(880, 0.5, 7, 0.45)
+              b = tone(1320, 0.6, 6, 0.4)
+              out = list(a)
+              out += silence(0.06)
+              out += b
+              return out
+
+          def blip():
+              n = int(RATE * 0.12)
+              out = []
+              for i in range(n):
+                  t = i / RATE
+                  f = 900 - 400 * (t / 0.12)
+                  out.append(math.sin(2 * math.pi * f * t) * math.exp(-20 * t) * 0.5)
+              return out
+
+          def working(sec=2.0):
+              n = int(RATE * sec)
+              out = []
+              for i in range(n):
+                  t = i / RATE
+                  env = 0.5 * (1 - math.cos(2 * math.pi * 1.5 * t)) * math.exp(-0.7 * t)
+                  out.append(math.sin(2 * math.pi * 320 * t) * env * 0.35)
+              return out
+
+          write('snd_pageflip.wav', flip())
+          write('snd_complete.wav', chime())
+          write('snd_paste.wav', blip())
+          write('snd_working.wav', working())
+          write('snd_tap.wav', click())
+          PY
+          python3 /tmp/make_sounds.py
+
+      - name: Wire the sounds into the app
+        run: |
+          cat > /tmp/patch_sounds.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          p = pathlib.Path('pubspec.yaml')
+          s = p.read_text()
+          if '- assets/\n' not in s:
+              s = s.replace('  assets:\n', '  assets:\n    - assets/\n', 1)
+              p.write_text(s)
+              changed.append('pubspec.yaml')
+
+          w = pathlib.Path('lib/widgets.dart')
+          s = w.read_text()
+          if 'class Sounds' not in s:
+              s += '''
+          /// Short sounds for actions. The files are made at build time.
+          class Sounds {
+            static final AudioPlayer _p = AudioPlayer();
+
+            static Future<void> play(String name) async {
+              try {
+                await _p.stop();
+                await _p.play(AssetSource('snd_$name.wav'), volume: 0.8);
+              } catch (_) {}
+            }
+          }
+          '''
+              if "package:audioplayers/audioplayers.dart" not in s:
+                  s = s.replace("import 'package:flutter/material.dart';",
+                                "import 'package:audioplayers/audioplayers.dart';\nimport 'package:flutter/material.dart';", 1)
+              w.write_text(s)
+              changed.append('lib/widgets.dart')
+
+          pp = pathlib.Path('lib/player_page.dart')
+          s = pp.read_text()
+          n = s.count('SystemSound.play(SystemSoundType.click);')
+          if n:
+              s = s.replace('SystemSound.play(SystemSoundType.click);', "Sounds.play('pageflip');")
+              pp.write_text(s)
+              changed.append('lib/player_page.dart (%d)' % n)
+
+          cf = pathlib.Path('lib/create_flow.dart')
+          s = cf.read_text()
+          if 'SystemSound.play(SystemSoundType.alert);' in s:
+              s = s.replace('SystemSound.play(SystemSoundType.alert);', "Sounds.play('complete');")
+              cf.write_text(s)
+              changed.append('lib/create_flow.dart')
+
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_sounds.py
+
+      - name: Fetch packages
+        run: flutter pub get
+
       - name: Raise the Android SDK level and add the text recognition scripts
         run: |
           cat > /tmp/patch_gradle.py <<'PY'
