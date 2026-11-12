@@ -597,10 +597,6 @@ jobs:
           if old in s:
               s = s.replace(old, new)
               changed.append('extractors: read halves')
-          if 'width: w * 3,' not in s:
-              s = s.replace('width: w * 2,', 'width: w * 3,')
-              s = s.replace('height: h * 2,', 'height: h * 3,')
-              changed.append('extractors: 3x render')
           ex.write_text(s)
           h = pathlib.Path('lib/home_page.dart')
           s = h.read_text()
