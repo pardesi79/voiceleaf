@@ -61,7 +61,6 @@ jobs:
           import math, os, random, struct, wave
 
           RATE = 22050
-          random.seed(7)
 
           def write(name, samples):
               path = os.path.join('assets', name)
@@ -71,40 +70,45 @@ jobs:
                   w.setsampwidth(2)
                   w.setframerate(RATE)
                   w.writeframes(b''.join(struct.pack('<h', int(max(-1, min(1, s)) * 30000)) for s in samples))
-              print('wrote', path, len(samples) / RATE, 's')
+              print('wrote', path, round(len(samples) / RATE, 3), 's')
 
-          def silence(sec):
-              return [0.0] * int(RATE * sec)
+          def fade(samples, ms=3):
+              n = int(RATE * ms / 1000)
+              for i in range(min(n, len(samples))):
+                  samples[i] *= i / n
+              for i in range(min(n, len(samples))):
+                  samples[-1 - i] *= i / n
+              return samples
 
-          def click(sec=0.09, tone=1400, noise=0.5):
+          def ui_click(sec=0.075, f1=1250.0, f2=430.0):
               n = int(RATE * sec)
               out = []
               for i in range(n):
                   t = i / RATE
-                  env = math.exp(-38 * t)
-                  s = math.sin(2 * math.pi * tone * t) * (1 - noise) + random.uniform(-1, 1) * noise
-                  out.append(s * env * 0.6)
-              return out
+                  env = math.exp(-55 * t)
+                  s = 0.62 * math.sin(2 * math.pi * f1 * t) + 0.38 * math.sin(2 * math.pi * f2 * t)
+                  out.append(s * env * 0.95)
+              return fade(out)
 
-          def flip(sec=0.16):
+          def two_tone():
+              n1 = int(RATE * 0.28)
+              a = [math.sin(2 * math.pi * 880 * (i / RATE)) * math.exp(-9 * (i / RATE)) * 0.5 for i in range(n1)]
+              n2 = int(RATE * 0.55)
+              b = [math.sin(2 * math.pi * 1318 * (i / RATE)) * math.exp(-6 * (i / RATE)) * 0.45 for i in range(n2)]
+              return fade(a) + [0.0] * int(RATE * 0.05) + fade(b)
+
+          def soft_tick(freq=720.0, sec=0.07, amp=0.42):
               n = int(RATE * sec)
               out = []
               for i in range(n):
                   t = i / RATE
-                  env = math.exp(-14 * t)
-                  out.append(random.uniform(-1, 1) * env * 0.5 + math.sin(2 * math.pi * 220 * t) * env * 0.2)
-              return out
+                  env = math.exp(-42 * t)
+                  out.append(math.sin(2 * math.pi * freq * t) * env * amp)
+              return fade(out, 4)
 
-          def tone(freq, sec, decay=6.0, amp=0.5):
-              n = int(RATE * sec)
-              return [math.sin(2 * math.pi * freq * (i / RATE)) * math.exp(-decay * (i / RATE)) * amp for i in range(n)]
-
-          def chime():
-              a = tone(880, 0.5, 7, 0.45)
-              b = tone(1320, 0.6, 6, 0.4)
-              out = list(a)
-              out += silence(0.06)
-              out += b
+          def working_loop():
+              out = soft_tick(720, 0.07) + [0.0] * int(RATE * 0.73)
+              out += soft_tick(560, 0.07) + [0.0] * int(RATE * 0.73)
               return out
 
           def blip():
@@ -112,24 +116,15 @@ jobs:
               out = []
               for i in range(n):
                   t = i / RATE
-                  f = 900 - 400 * (t / 0.12)
-                  out.append(math.sin(2 * math.pi * f * t) * math.exp(-20 * t) * 0.5)
-              return out
+                  f = 980 - 380 * (t / 0.12)
+                  out.append(math.sin(2 * math.pi * f * t) * math.exp(-24 * t) * 0.5)
+              return fade(out)
 
-          def working(sec=2.0):
-              n = int(RATE * sec)
-              out = []
-              for i in range(n):
-                  t = i / RATE
-                  env = 0.5 * (1 - math.cos(2 * math.pi * 1.5 * t)) * math.exp(-0.7 * t)
-                  out.append(math.sin(2 * math.pi * 320 * t) * env * 0.35)
-              return out
-
-          write('snd_pageflip.wav', flip())
-          write('snd_complete.wav', chime())
+          write('snd_pageflip.wav', ui_click())
+          write('snd_complete.wav', two_tone())
           write('snd_paste.wav', blip())
-          write('snd_working.wav', working())
-          write('snd_tap.wav', click())
+          write('snd_working.wav', working_loop())
+          write('snd_tap.wav', ui_click(0.05, 900.0, 300.0))
           PY
           python3 /tmp/make_sounds.py
 
@@ -151,14 +146,29 @@ jobs:
           s = w.read_text()
           if 'class Sounds' not in s:
               s += '''
-          /// Short sounds for actions. The files are made at build time.
+          /// Short interface sounds. The wav files are generated at build time.
           class Sounds {
-            static final AudioPlayer _p = AudioPlayer();
+            static final AudioPlayer _one = AudioPlayer();
+            static final AudioPlayer _loop = AudioPlayer();
 
             static Future<void> play(String name) async {
               try {
-                await _p.stop();
-                await _p.play(AssetSource('snd_$name.wav'), volume: 0.8);
+                await _one.stop();
+                await _one.play(AssetSource('snd_$name.wav'), volume: 1.0);
+              } catch (_) {}
+            }
+
+            static Future<void> loop(String name) async {
+              try {
+                await _loop.stop();
+                await _loop.setReleaseMode(ReleaseMode.loop);
+                await _loop.play(AssetSource('snd_$name.wav'), volume: 0.55);
+              } catch (_) {}
+            }
+
+            static Future<void> stopLoop() async {
+              try {
+                await _loop.stop();
               } catch (_) {}
             }
           }
@@ -181,9 +191,39 @@ jobs:
           s = cf.read_text()
           if 'SystemSound.play(SystemSoundType.alert);' in s:
               s = s.replace('SystemSound.play(SystemSoundType.alert);', "Sounds.play('complete');")
-              cf.write_text(s)
-              changed.append('lib/create_flow.dart')
+              changed.append('create_flow: complete')
 
+          old_init = """  @override
+            void initState() {
+              super.initState();
+              WidgetsBinding.instance.addPostFrameCallback((_) => _go());
+            }"""
+          new_init = """  @override
+            void initState() {
+              super.initState();
+              if (AppPrefs.I.flag('processingSound')) Sounds.loop('working');
+              WidgetsBinding.instance.addPostFrameCallback((_) => _go());
+            }"""
+          if old_init in s and "Sounds.loop('working')" not in s:
+              s = s.replace(old_init, new_init)
+              changed.append('create_flow: loop start')
+
+          old_dispose = """  @override
+            void dispose() {
+              voice?.stop();
+              super.dispose();
+            }"""
+          new_dispose = """  @override
+            void dispose() {
+              voice?.stop();
+              Sounds.stopLoop();
+              super.dispose();
+            }"""
+          if old_dispose in s and 'Sounds.stopLoop();' not in s:
+              s = s.replace(old_dispose, new_dispose)
+              changed.append('create_flow: loop stop')
+
+          cf.write_text(s)
           print('patched:', ', '.join(changed) if changed else 'nothing')
           PY
           python3 /tmp/patch_sounds.py
