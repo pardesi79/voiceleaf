@@ -625,6 +625,122 @@ jobs:
           PY
           python3 /tmp/patch_spread3.py
 
+      - name: Add the new OCR engine and its Hindi model
+        run: |
+          mkdir -p assets/ocr
+          BASE=https://raw.githubusercontent.com/egdels/makeacopy/main/app/src/main/assets/paddleocr/v5
+          curl -sL -o assets/ocr/det.ort $BASE/det.ort
+          curl -sL -o assets/ocr/devanagari.ort $BASE/devanagari_PP-OCRv5_mobile_rec.ort
+          curl -sL -o assets/ocr/devanagari_dict.txt $BASE/devanagari_PP-OCRv5_mobile_rec_dict.txt
+          curl -sL -o assets/ocr/latin.ort $BASE/latin_PP-OCRv5_mobile_rec.ort
+          ls -la assets/ocr
+          cat > /tmp/patch_paddle.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          # 1. the app must bundle the new model folder
+          p = pathlib.Path('pubspec.yaml')
+          s = p.read_text()
+          if '- assets/ocr/\n' not in s:
+              s = s.replace('  assets:\n', '  assets:\n    - assets/ocr/\n', 1)
+              p.write_text(s)
+              changed.append('pubspec: ocr assets')
+
+          # 2. a small channel that proves the ONNX engine and the model load
+          kt = pathlib.Path('android/app/src/main/kotlin/com/voiceleaf/voiceleaf/MainActivity.kt')
+          if kt.exists():
+              s = kt.read_text()
+              if 'voiceleaf/ocr' not in s:
+                  s = s.replace('import io.flutter.embedding.android.FlutterActivity',
+                                'import io.flutter.embedding.android.FlutterActivity\n'
+                                'import io.flutter.embedding.engine.FlutterEngine\n'
+                                'import io.flutter.plugin.common.MethodChannel', 1)
+                  s = s.replace('    private fun handleIntent(intent: Intent?) {',
+          '''    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/ocr")
+                      .setMethodCallHandler { call, result ->
+                          when (call.method) {
+                              "smoke" -> result.success(smokeTest())
+                              else -> result.notImplemented()
+                          }
+                      }
+              }
+
+              private fun smokeTest(): String {
+                  return try {
+                      val env = ai.onnxruntime.OrtEnvironment.getEnvironment()
+                      val bytes = assets.open("flutter_assets/assets/ocr/det.ort").readBytes()
+                      val opts = ai.onnxruntime.OrtSession.SessionOptions()
+                      val session = env.createSession(bytes, opts)
+                      val input = session.inputNames.firstOrNull() ?: "?"
+                      val outputs = session.outputNames.joinToString(",")
+                      session.close()
+                      "ONNX engine ready. Model loaded. Input: $input. Outputs: $outputs"
+                  } catch (e: Throwable) {
+                      "ONNX failed: ${e.javaClass.simpleName}: ${e.message}"
+                  }
+              }
+
+              private fun handleIntent(intent: Intent?) {''', 1)
+                  kt.write_text(s)
+                  changed.append('MainActivity: smoke channel')
+
+          # 3. a button in Preferences so the test can be run without a computer
+          pp = pathlib.Path('lib/preferences_page.dart')
+          s = pp.read_text()
+          if 'voiceleaf/ocr' not in s:
+              anchor = """            Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.text_fields),
+                          label: const Tx('Test text recognition'),
+                          onPressed: () => _testOcr(context),
+                        ),
+                      ),"""
+              add = anchor + """
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.memory),
+                          label: const Tx('Test new OCR engine'),
+                          onPressed: () => _testEngine(context),
+                        ),
+                      ),"""
+              if anchor in s:
+                  s = s.replace(anchor, add, 1)
+                  s = s.replace('  Future<void> _testOcr(BuildContext context) async {',
+          '''  Future<void> _testEngine(BuildContext context) async {
+              String msg;
+              try {
+                const ch = MethodChannel('voiceleaf/ocr');
+                msg = await ch.invokeMethod<String>('smoke') ?? 'no answer from the engine';
+              } catch (e) {
+                msg = 'failed: $e';
+              }
+              if (!context.mounted) return;
+              await showDialog<void>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Tx('New OCR engine'),
+                  content: SingleChildScrollView(child: SelectableText(msg)),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(ctx), child: const Tx('Close')),
+                  ],
+                ),
+              );
+            }
+
+            Future<void> _testOcr(BuildContext context) async {''', 1)
+                  pp.write_text(s)
+                  changed.append('preferences: engine test button')
+
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_paddle.py
+
       - name: Fetch packages
         run: flutter pub get
 
@@ -695,6 +811,7 @@ jobs:
               implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
               implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
               implementation("com.google.mlkit:text-recognition-korean:16.0.1")
+              implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
           }
           """
               root_extra = """
@@ -733,6 +850,7 @@ jobs:
               implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
               implementation 'com.google.mlkit:text-recognition-japanese:16.0.1'
               implementation 'com.google.mlkit:text-recognition-korean:16.0.1'
+              implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.20.0'
           }
           """
               root_extra = """
