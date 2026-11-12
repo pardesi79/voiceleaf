@@ -1325,7 +1325,7 @@ jobs:
           p = pathlib.Path('pubspec.yaml')
           s = p.read_text()
           if 'pdfx:' in s:
-              s = s.replace('  pdfx: ^2.9.2', '  pdfrx: ^2.12.0', 1)
+              s = s.replace('  pdfx: ^2.9.2', '  pdfrx: ^2.4.5', 1)
               p.write_text(s)
               changed.append('pubspec: pdfrx')
 
