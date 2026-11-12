@@ -91,6 +91,7 @@ jobs:
                           .putString("flutter.pending_file", out.absolutePath)
                           .apply()
                   } catch (e: Exception) {
+                      // If anything goes wrong the app still opens normally.
                   }
               }
               private fun queryName(uri: Uri): String? {
@@ -167,6 +168,7 @@ jobs:
                 WidgetsBinding.instance.addPostFrameCallback((_) => _openIncoming(f));
               }
             }
+            /// A PDF, DOCX or text file handed to us by another app's "Open with".
             Future<void> _openIncoming(String path) async {
               final name = path.split('/').last;
               final title = name.contains('.') ? name.substring(0, name.lastIndexOf('.')) : name;
@@ -218,6 +220,122 @@ jobs:
           PY
           python3 /tmp/patch_openwith.py
 
+      - name: Show the processing screen for an opened file
+        run: |
+          cat > /tmp/patch_openwith2.py <<'PY'
+          import os, pathlib, re
+          changed = []
+          PKG = 'com.voiceleaf.voiceleaf'
+          cf = pathlib.Path('lib/create_flow.dart')
+          s = cf.read_text()
+          if 'runCreateFromPath' not in s:
+              helper = '''/// Builds an audiobook from a file another app handed to us.
+          Future<Book?> runCreateFromPath(BuildContext context, String path) async {
+            final ocr = AppPrefs.I.ocr;
+            final fileName = path.split('/').last;
+            final title = fileName.contains('.')
+                ? fileName.substring(0, fileName.lastIndexOf('.'))
+                : fileName;
+            final ext = fileName.contains('.') ? fileName.split('.').last.toLowerCase() : '';
+            Future<Book?> process(Future<Extracted?> Function(StatusFn) job) async {
+              final out = await Navigator.push<_Outcome>(
+                  context, MaterialPageRoute(builder: (_) => ProcessingPage(job: job)));
+              if (!context.mounted || out == null) return null;
+              if (out.error != null) {
+                toast(context, 'Failed: ${out.error}');
+                return null;
+              }
+              final ex = out.ex;
+              if (ex == null || ex.pages.isEmpty) {
+                toast(context, 'No readable text was found.');
+                return null;
+              }
+              final b = Book(
+                id: DateTime.now().millisecondsSinceEpoch.toString(),
+                title: ex.title.isEmpty ? title : ex.title,
+                pages: ex.pages,
+              );
+              await Storage.save(b);
+              if (AppPrefs.I.flag('completeSound')) Sounds.play('complete');
+              return b;
+            }
+            if (ext == 'pdf') {
+              int count;
+              try {
+                count = await Extractors.pdfPageCount(path);
+              } catch (_) {
+                toast(context, 'Could not open this PDF.');
+                return null;
+              }
+              if (!context.mounted) return null;
+              final range = await Navigator.push<List<int>>(context,
+                  MaterialPageRoute(builder: (_) => ChoosePagesPage(total: count)));
+              if (range == null || !context.mounted) return null;
+              return process((st) async {
+                final pages = await Extractors.pdf(path, ocr, range[0], range[1],
+                    (d, t, c) => st(
+                        c < 0
+                            ? 'Page $d of $t, reading'
+                            : c == 0
+                                ? 'Page $d of $t, no text found'
+                                : 'Page $d of $t, $c characters',
+                        speak: true),
+                    pageNumbers: range[2] == 1);
+                return Extracted(title, pages);
+              });
+            }
+            if (ext == 'zip') {
+              final b = await Extractors.restoreZip(path);
+              if (b == null) {
+                toast(context, 'That is not a Voiceleaf backup.');
+                return null;
+              }
+              await Storage.save(b);
+              return b;
+            }
+            return process((st) async {
+              st('Reading file...');
+              List<String> pages = [];
+              if (ext == 'docx') {
+                pages = await Extractors.docx(path);
+              } else if (ext == 'pptx') {
+                pages = await Extractors.pptx(path);
+              } else if (ext == 'xlsx') {
+                pages = await Extractors.xlsx(path);
+              } else {
+                pages = await Extractors.txt(path);
+              }
+              return Extracted(title, pages);
+            });
+          }
+          '''
+              anchor = "Future<Book?> runCreate(BuildContext context, String choice) async {"
+              if anchor in s:
+                  s = s.replace(anchor, helper + anchor, 1)
+                  cf.write_text(s)
+                  changed.append('create_flow: runCreateFromPath')
+          h = pathlib.Path('lib/home_page.dart')
+          s = h.read_text()
+          start = s.find('  /// A PDF, DOCX or text file handed to us by another app')
+          if start >= 0:
+              end = s.find('  Future<void> _load()', start)
+              if end < 0:
+                  end = s.find('\n  void ', start)
+              new_body = '''  /// A file handed to us by another app's "Open with".
+            Future<void> _openIncoming(String path) async {
+              final b = await runCreateFromPath(context, path);
+              if (b == null) return;
+              await _load();
+              if (mounted) _open(b, autoStart: true);
+            }
+          '''
+              s = s[:start] + new_body + s[end:]
+              h.write_text(s)
+              changed.append('home_page: call helper')
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_openwith2.py
+
       - name: Use a stable signing key so a new build installs over the old app
         run: |
           mkdir -p android/app
@@ -260,7 +378,8 @@ jobs:
               for i in range(min(n, len(samples))):
                   samples[-1 - i] *= i / n
               return samples
-          def paper_flip(sec=0.24):
+          def paper_flip(sec=0.18):
+              """A soft paper swish. Bright noise only, no low hum, so it never thuds."""
               n = int(RATE * sec)
               random.seed(11)
               out = []
@@ -268,11 +387,10 @@ jobs:
               for i in range(n):
                   t = i / RATE
                   x = t / sec
-                  env = (x ** 0.6) * math.exp(-5.5 * x)
-                  lp = lp + 0.18 * (random.uniform(-1, 1) - lp)
-                  body = lp * 1.7 + 0.22 * math.sin(2 * math.pi * 165 * t)
-                  out.append(body * env * 0.95)
-              return fade(out, 8)
+                  env = (x ** 0.5) * math.exp(-7.0 * x)
+                  lp = lp + 0.45 * (random.uniform(-1, 1) - lp)
+                  out.append(lp * env * 0.8)
+              return fade(out, 5)
           def two_tone():
               n1 = int(RATE * 0.28)
               a = [math.sin(2 * math.pi * 880 * (i / RATE)) * math.exp(-9 * (i / RATE)) * 0.5 for i in range(n1)]
@@ -288,6 +406,7 @@ jobs:
                   out.append(math.sin(2 * math.pi * freq * t) * env * amp)
               return fade(out, 4)
           def working_loop():
+              """Quiet, slow tick so it can run for minutes without getting annoying."""
               return soft_tick(480, 0.06, 0.22) + [0.0] * int(RATE * 1.34)
           def blip():
               n = int(RATE * 0.12)
@@ -320,6 +439,8 @@ jobs:
           s = w.read_text()
           if 'class Sounds' not in s:
               s += '''
+          /// Short interface sounds. The wav files are generated at build time.
+          /// They never take audio focus, so the reading voice is not interrupted.
           class Sounds {
             static final AudioPlayer _one = AudioPlayer();
             static final AudioPlayer _loop = AudioPlayer();
@@ -427,10 +548,11 @@ jobs:
               changed.append('extractors: typed_data import')
           if '_cropHalf' not in s:
               s = s.replace("  static int _letters(String t) {",
-          """  static Future<Uint8List> _cropHalf(ui.Image src, int x, int w) async {
-            final rec = ui.PictureRecorder();
-            final canvas = ui.Canvas(rec);
-            canvas.drawImageRect(
+          """  /// Cuts a slice out of a picture and gives it back as PNG bytes.
+            static Future<Uint8List> _cropHalf(ui.Image src, int x, int w) async {
+              final rec = ui.PictureRecorder();
+              final canvas = ui.Canvas(rec);
+              canvas.drawImageRect(
                 src,
                 ui.Rect.fromLTWH(x.toDouble(), 0, w.toDouble(), src.height.toDouble()),
                 ui.Rect.fromLTWH(0, 0, w.toDouble(), src.height.toDouble()),
@@ -446,6 +568,8 @@ jobs:
           old = "        final text = await ocrFile(f, mode);"
           new = """        String text;
                   if (w > h) {
+                    // A scanned book often shows two pages side by side. Read each half
+                    // on its own, otherwise the two pages get mixed together line by line.
                     final codec = await ui.instantiateImageCodec(img.bytes);
                     final frame = await codec.getNextFrame();
                     final full = frame.image;
