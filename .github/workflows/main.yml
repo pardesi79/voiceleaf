@@ -737,6 +737,320 @@ jobs:
           PY
           python3 /tmp/patch_paddle.py
 
+      - name: Read pages with the new engine
+        run: |
+          cat > android/app/src/main/kotlin/com/voiceleaf/voiceleaf/PaddleOcr.kt <<'KT'
+          package com.voiceleaf.voiceleaf
+
+          import ai.onnxruntime.OnnxTensor
+          import ai.onnxruntime.OrtEnvironment
+          import ai.onnxruntime.OrtSession
+          import android.content.Context
+          import android.graphics.Bitmap
+          import android.graphics.BitmapFactory
+          import java.io.File
+          import java.nio.FloatBuffer
+          import java.util.Collections
+
+          /**
+           * Offline text recognition with PaddleOCR models, running on ONNX Runtime.
+           * Detection finds the text lines, recognition reads each line on its own.
+           */
+          object PaddleOcr {
+
+              private var env: OrtEnvironment? = null
+              private var det: OrtSession? = null
+              private var rec: OrtSession? = null
+              private var dict: List<String> = emptyList()
+              private var loaded = false
+              private var lastError = ""
+
+              private const val DET_MAX_SIDE = 1536
+              private const val DB_THRESH = 0.3f
+              private const val BOX_THRESH = 0.6f
+              private const val MIN_SIDE = 3
+              private const val REC_H = 48
+              private const val REC_MAX_W = 1024
+
+              fun status(ctx: Context): String {
+                  if (load(ctx)) {
+                      return "ready. det+rec loaded, ${dict.size} characters"
+                  }
+                  return "failed: $lastError"
+              }
+
+              private fun load(ctx: Context): Boolean {
+                  if (loaded) return true
+                  return try {
+                      val e = OrtEnvironment.getEnvironment()
+                      env = e
+                      val opts = OrtSession.SessionOptions()
+                      det = e.createSession(ctx.assets.open("flutter_assets/assets/ocr/det.ort").readBytes(), opts)
+                      rec = e.createSession(ctx.assets.open("flutter_assets/assets/ocr/devanagari.ort").readBytes(), opts)
+                      dict = ctx.assets.open("flutter_assets/assets/ocr/devanagari_dict.txt")
+                          .bufferedReader().readLines().filter { it.isNotEmpty() }
+                      loaded = true
+                      true
+                  } catch (t: Throwable) {
+                      lastError = "${t.javaClass.simpleName}: ${t.message}"
+                      false
+                  }
+              }
+
+              fun readFile(ctx: Context, path: String): String {
+                  if (!load(ctx)) return "failed: $lastError"
+                  val bmp = BitmapFactory.decodeFile(path) ?: return "failed: cannot open image"
+                  return readBitmap(ctx, bmp)
+              }
+
+              fun readBitmap(ctx: Context, src: Bitmap): String {
+                  if (!load(ctx)) return "failed: $lastError"
+                  val boxes = detect(src)
+                  if (boxes.isEmpty()) return ""
+                  val lines = ArrayList<String>()
+                  for (b in boxes) {
+                      val text = recognise(src, b)
+                      if (text.isNotEmpty()) lines.add(text)
+                  }
+                  return lines.joinToString("\n")
+              }
+
+              // ---------- detection ----------
+              private class Box(val l: Int, val t: Int, val r: Int, val b: Int)
+
+              private fun detect(src: Bitmap): List<Box> {
+                  val w0 = src.width
+                  val h0 = src.height
+                  val scale = minOf(DET_MAX_SIDE.toFloat() / maxOf(w0, h0), 1f)
+                  val nw = maxOf(32, (w0 * scale).toInt() / 32 * 32)
+                  val nh = maxOf(32, (h0 * scale).toInt() / 32 * 32)
+                  val small = Bitmap.createScaledBitmap(src, nw, nh, true)
+
+                  val px = IntArray(nw * nh)
+                  small.getPixels(px, 0, nw, 0, 0, nw, nh)
+
+                  val data = FloatArray(3 * nw * nh)
+                  val mean = floatArrayOf(0.406f * 255f, 0.456f * 255f, 0.485f * 255f)
+                  val std = floatArrayOf(0.225f * 255f, 0.224f * 255f, 0.229f * 255f)
+                  for (i in 0 until nw * nh) {
+                      val p = px[i]
+                      val b = (p and 0xFF).toFloat()
+                      val g = ((p shr 8) and 0xFF).toFloat()
+                      val r = ((p shr 16) and 0xFF).toFloat()
+                      data[i] = (b - mean[0]) / std[0]
+                      data[nw * nh + i] = (g - mean[1]) / std[1]
+                      data[2 * nw * nh + i] = (r - mean[2]) / std[2]
+                  }
+
+                  val e = env ?: return emptyList()
+                  val s = det ?: return emptyList()
+                  val name = s.inputNames.first()
+                  OnnxTensor.createTensor(e, FloatBuffer.wrap(data), longArrayOf(1, 3, nh.toLong(), nw.toLong())).use { t ->
+                      s.run(Collections.singletonMap(name, t)).use { out ->
+                          val o = out.get(0).value
+                          val map: Array<Array<FloatArray>> = when (o) {
+                              is Array<*> -> (o[0] as Array<*>) as Array<Array<FloatArray>>
+                              else -> return emptyList()
+                          }
+                          return boxesFrom(map, nw, nh, w0.toFloat() / nw, h0.toFloat() / nh)
+                      }
+                  }
+              }
+
+              private fun boxesFrom(map: Array<Array<FloatArray>>, w: Int, h: Int, sx: Float, sy: Float): List<Box> {
+                  val seen = BooleanArray(w * h)
+                  val out = ArrayList<Box>()
+                  val stack = IntArray(w * h)
+                  for (start in 0 until w * h) {
+                      if (seen[start]) continue
+                      val y0 = start / w
+                      val x0 = start % w
+                      if (map[y0][x0] <= DB_THRESH) { seen[start] = true; continue }
+                      var sp = 0
+                      stack[sp++] = start
+                      seen[start] = true
+                      var minX = x0; var maxX = x0; var minY = y0; var maxY = y0
+                      var sum = 0f; var count = 0
+                      while (sp > 0) {
+                          val cur = stack[--sp]
+                          val cy = cur / w
+                          val cx = cur % w
+                          sum += map[cy][cx]; count++
+                          if (cx < minX) minX = cx
+                          if (cx > maxX) maxX = cx
+                          if (cy < minY) minY = cy
+                          if (cy > maxY) maxY = cy
+                          for (dy in -1..1) for (dx in -1..1) {
+                              val nx = cx + dx
+                              val ny = cy + dy
+                              if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+                              val ni = ny * w + nx
+                              if (seen[ni]) continue
+                              if (map[ny][nx] <= DB_THRESH) { seen[ni] = true; continue }
+                              seen[ni] = true
+                              stack[sp++] = ni
+                          }
+                      }
+                      val bw = maxX - minX + 1
+                      val bh = maxY - minY + 1
+                      if (bw < MIN_SIDE || bh < MIN_SIDE) continue
+                      if (count == 0 || sum / count < BOX_THRESH) continue
+                      val pad = 2
+                      out.add(
+                          Box(
+                              maxOf(0, ((minX - pad) * sx).toInt()),
+                              maxOf(0, ((minY - pad) * sy).toInt()),
+                              minOf((w * sx).toInt(), ((maxX + pad) * sx).toInt()),
+                              minOf((h * sy).toInt(), ((maxY + pad) * sy).toInt())
+                          )
+                      )
+                  }
+                  out.sortWith(compareBy({ it.t / 12 }, { it.l }))
+                  return out
+              }
+
+              // ---------- recognition ----------
+              private fun recognise(src: Bitmap, b: Box): String {
+                  val cw = maxOf(1, b.r - b.l)
+                  val ch = maxOf(1, b.b - b.t)
+                  val crop = Bitmap.createBitmap(src, b.l, b.t, minOf(cw, src.width - b.l), minOf(ch, src.height - b.t))
+                  var w = (REC_H * cw.toFloat() / ch).toInt()
+                  if (w < 8) w = 8
+                  if (w > REC_MAX_W) w = REC_MAX_W
+                  val rs = Bitmap.createScaledBitmap(crop, w, REC_H, true)
+                  val px = IntArray(w * REC_H)
+                  rs.getPixels(px, 0, w, 0, 0, w, REC_H)
+
+                  val data = FloatArray(3 * w * REC_H)
+                  for (i in 0 until w * REC_H) {
+                      val p = px[i]
+                      data[i] = ((p and 0xFF) / 255f - 0.5f) / 0.5f
+                      data[w * REC_H + i] = (((p shr 8) and 0xFF) / 255f - 0.5f) / 0.5f
+                      data[2 * w * REC_H + i] = (((p shr 16) and 0xFF) / 255f - 0.5f) / 0.5f
+                  }
+
+                  val e = env ?: return ""
+                  val s = rec ?: return ""
+                  val name = s.inputNames.first()
+                  OnnxTensor.createTensor(e, FloatBuffer.wrap(data), longArrayOf(1, 3, REC_H.toLong(), w.toLong())).use { t ->
+                      s.run(Collections.singletonMap(name, t)).use { out ->
+                          val o = out.get(0).value
+                          val seq: Array<FloatArray> = when (o) {
+                              is Array<*> -> (o[0] as Array<*>) as Array<FloatArray>
+                              else -> return ""
+                          }
+                          return decode(seq)
+                      }
+                  }
+              }
+
+              private fun decode(seq: Array<FloatArray>): String {
+                  val sb = StringBuilder()
+                  var prev = -1
+                  for (step in seq) {
+                      var best = 0
+                      var bestV = step[0]
+                      for (i in 1 until step.size) {
+                          if (step[i] > bestV) { bestV = step[i]; best = i }
+                      }
+                      if (best != 0 && best != prev) {
+                          val idx = best - 1
+                          if (idx >= 0 && idx < dict.size) sb.append(dict[idx])
+                      }
+                      prev = best
+                  }
+                  return sb.toString().trim()
+              }
+          }
+          KT
+          cat > /tmp/patch_paddle2.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          kt = pathlib.Path('android/app/src/main/kotlin/com/voiceleaf/voiceleaf/MainActivity.kt')
+          if kt.exists():
+              s = kt.read_text()
+              if 'PaddleOcr' not in s:
+                  s = s.replace('''                when (call.method) {
+                              "smoke" -> result.success(smokeTest())
+                              else -> result.notImplemented()
+                          }''',
+          '''                when (call.method) {
+                              "smoke" -> result.success(smokeTest())
+                              "status" -> result.success(PaddleOcr.status(this@MainActivity))
+                              "ocrImage" -> {
+                                  val path = call.argument<String>("path")
+                                  if (path == null) {
+                                      result.success("no path given")
+                                  } else {
+                                      result.success(PaddleOcr.readFile(this@MainActivity, path))
+                                  }
+                              }
+                              else -> result.notImplemented()
+                          }''', 1)
+                  kt.write_text(s)
+                  changed.append('MainActivity: ocrImage')
+
+          pp = pathlib.Path('lib/preferences_page.dart')
+          s = pp.read_text()
+          if 'Test new engine on a page' not in s:
+              anchor = """            Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.memory),
+                          label: const Tx('Test new OCR engine'),
+                          onPressed: () => _testEngine(context),
+                        ),
+                      ),"""
+              add = anchor + """
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.document_scanner),
+                          label: const Tx('Test new engine on a page'),
+                          onPressed: () => _testPaddlePage(context),
+                        ),
+                      ),"""
+              if anchor in s:
+                  s = s.replace(anchor, add, 1)
+                  s = s.replace('  Future<void> _testEngine(BuildContext context) async {',
+          '''  Future<void> _testPaddlePage(BuildContext context) async {
+              String out;
+              try {
+                final dir = await getTemporaryDirectory();
+                final data = await rootBundle.load('assets/ocr_test_hi.png');
+                final f = File('${dir.path}/paddle_test.png');
+                await f.writeAsBytes(data.buffer.asUint8List());
+                const ch = MethodChannel('voiceleaf/ocr');
+                final t = await ch.invokeMethod<String>('ocrImage', {'path': f.path});
+                final clean = (t ?? '').trim();
+                out = clean.isEmpty ? 'nothing found' : clean;
+              } catch (e) {
+                out = 'failed: $e';
+              }
+              if (!context.mounted) return;
+              await showDialog<void>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Tx('New engine on a page'),
+                  content: SingleChildScrollView(child: SelectableText(out)),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(ctx), child: const Tx('Close')),
+                  ],
+                ),
+              );
+            }
+
+            Future<void> _testEngine(BuildContext context) async {''', 1)
+                  pp.write_text(s)
+                  changed.append('preferences: paddle page test')
+
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_paddle2.py
+
       - name: Fetch packages
         run: flutter pub get
 
