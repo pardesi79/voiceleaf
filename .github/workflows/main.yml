@@ -1325,9 +1325,10 @@ jobs:
           p = pathlib.Path('pubspec.yaml')
           s = p.read_text()
           if 'pdfx:' in s:
-              s = s.replace('  pdfx: ^2.9.2', '  pdfrx: ^2.4.5', 1)
+              s = s.replace('  pdfx: ^2.9.2', '  pdfrx: ^2.12.0', 1)
+              s = s.replace('  archive: ^3.6.1', '  archive: ^4.0.9', 1)
               p.write_text(s)
-              changed.append('pubspec: pdfrx')
+              changed.append('pubspec: pdfrx + archive 4')
 
           ex = pathlib.Path('lib/extractors.dart')
           s = ex.read_text()
@@ -1348,15 +1349,15 @@ jobs:
           new_count = """  static Future<int> pdfPageCount(String path) async {
               final doc = await PdfDocument.openFile(path);
               final n = doc.pages.length;
-              await doc.close();
+              await doc.dispose();
               return n;
             }
 
             /// Turns one rendered page into PNG bytes, which both engines understand.
             static Future<Uint8List> _pagePng(PdfPage page) async {
               final img = await page.render(
-                fullWidth: (page.width * 2).round(),
-                fullHeight: (page.height * 2).round(),
+                fullWidth: page.width * 2,
+                fullHeight: page.height * 2,
               );
               if (img == null) return Uint8List(0);
               final bgra = img.pixels;
@@ -1452,7 +1453,7 @@ jobs:
                       'recognition language in Preferences.');
                 }
               } finally {
-                await doc.close();
+                await doc.dispose();
               }
               return pages;
             }
@@ -1460,9 +1461,86 @@ jobs:
           s = s[:start] + new_pdf + s[end:]
           changed.append('extractors: pdf rewritten for pdfrx')
           ex.write_text(s)
+
+          # archive v4 returns a plain list, so the old null-assert is no longer needed
+          ex2 = pathlib.Path('lib/exporter.dart')
+          s2 = ex2.read_text()
+          if 'ZipEncoder().encode(arc)!' in s2:
+              s2 = s2.replace('ZipEncoder().encode(arc)!', 'ZipEncoder().encode(arc)')
+              ex2.write_text(s2)
+              changed.append('exporter: archive v4')
+
           print('patched:', ', '.join(changed))
           PY
           python3 /tmp/patch_pdfrx.py
+
+      - name: Choose the right script fairly in auto mode
+        run: |
+          cat > /tmp/patch_autolang.py <<'PY'
+          import pathlib
+
+          changed = []
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # 1. score each result by characters of its own script
+          old_letters = """  static int _letters(String t) {
+              var n = 0;
+              for (final r in t.runes) {
+                if (r > 32) n++;
+              }
+              return n;
+            }"""
+          new_letters = """  static int _letters(String t) {
+              var n = 0;
+              for (final r in t.runes) {
+                if (r > 32) n++;
+              }
+              return n;
+            }
+
+            /// Counts how many characters of the expected script a result really has.
+            /// Comparing raw length is unfair: a Latin pass over a Hindi page returns a
+            /// lot of junk that is longer than the correct Devanagari text.
+            static int _scriptScore(String t, bool devanagari) {
+              var n = 0;
+              for (final r in t.runes) {
+                if (devanagari) {
+                  if (r >= 0x0900 && r <= 0x097F) n++;
+                } else {
+                  if ((r >= 0x41 && r <= 0x5A) || (r >= 0x61 && r <= 0x7A)) n++;
+                }
+              }
+              return n;
+            }"""
+          if old_letters in s:
+              s = s.replace(old_letters, new_letters, 1)
+              changed.append('extractors: script score')
+
+          # 2. use that score when both passes run
+          old_auto = """    var best = await run('latin');
+              var bestLen = _letters(best);
+              final dev = await run('devanagari');
+              if (_letters(dev) > bestLen) {
+                best = dev;
+                bestLen = _letters(dev);
+              }"""
+          new_auto = """    var best = await run('latin');
+              var bestLen = _scriptScore(best, false);
+              final dev = await run('devanagari');
+              final devScore = _scriptScore(dev, true);
+              if (devScore > bestLen) {
+                best = dev;
+                bestLen = devScore;
+              }"""
+          if old_auto in s:
+              s = s.replace(old_auto, new_auto, 1)
+              changed.append('extractors: fair auto compare')
+
+          ex.write_text(s)
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_autolang.py
 
       - name: Fetch packages
         run: flutter pub get
@@ -1601,6 +1679,91 @@ jobs:
                   print('patched', root)
           PY
           python3 /tmp/patch_gradle.py
+
+      - name: Take the OCR models from Play Services
+        run: |
+          cat > /tmp/patch_mlkit2.py <<'PY'
+          import glob, os, pathlib, re
+
+          changed = []
+
+          # ---------- 1. the plugin itself must compile against the Play Services classes
+          for g in glob.glob(os.path.expanduser(
+                  '~/.pub-cache/hosted/pub.dev/google_mlkit_text_recognition-*/android/build.gradle')):
+              p = pathlib.Path(g)
+              s = p.read_text()
+              if 'play-services-mlkit-text-recognition' in s:
+                  continue
+              old = '''        implementation("com.google.mlkit:text-recognition:16.0.1")
+                  compileOnly("com.google.mlkit:text-recognition-chinese:16.0.1")
+                  compileOnly("com.google.mlkit:text-recognition-devanagari:16.0.1")
+                  compileOnly("com.google.mlkit:text-recognition-japanese:16.0.1")
+                  compileOnly("com.google.mlkit:text-recognition-korean:16.0.1")'''
+              new = '''        compileOnly("com.google.android.gms:play-services-mlkit-text-recognition:19.0.2")
+                  compileOnly("com.google.android.gms:play-services-mlkit-text-recognition-chinese:16.0.2")
+                  compileOnly("com.google.android.gms:play-services-mlkit-text-recognition-devanagari:16.0.2")
+                  compileOnly("com.google.android.gms:play-services-mlkit-text-recognition-japanese:16.0.2")
+                  compileOnly("com.google.android.gms:play-services-mlkit-text-recognition-korean:16.0.2")'''
+              if old in s:
+                  s = s.replace(old, new, 1)
+                  p.write_text(s)
+                  changed.append('plugin: ' + p.parts[-3])
+
+          # ---------- 2. the app brings the models from Play Services at run time
+          app = None
+          for name in ('android/app/build.gradle.kts', 'android/app/build.gradle'):
+              if os.path.exists(name):
+                  app = pathlib.Path(name)
+                  break
+
+          if app is not None:
+              kts = app.name.endswith('.kts')
+              s = app.read_text()
+              if kts:
+                  bundled = [
+                      'implementation("com.google.mlkit:text-recognition:16.0.1")',
+                      'implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")',
+                      'implementation("com.google.mlkit:text-recognition-chinese:16.0.1")',
+                      'implementation("com.google.mlkit:text-recognition-japanese:16.0.1")',
+                      'implementation("com.google.mlkit:text-recognition-korean:16.0.1")',
+                  ]
+                  wanted = '''    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.2")
+              implementation("com.google.android.gms:play-services-mlkit-text-recognition-devanagari:16.0.2")'''
+              else:
+                  bundled = [
+                      "implementation 'com.google.mlkit:text-recognition:16.0.1'",
+                      "implementation 'com.google.mlkit:text-recognition-devanagari:16.0.1'",
+                      "implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'",
+                      "implementation 'com.google.mlkit:text-recognition-japanese:16.0.1'",
+                      "implementation 'com.google.mlkit:text-recognition-korean:16.0.1'",
+                  ]
+                  wanted = '''    implementation 'com.google.android.gms:play-services-mlkit-text-recognition:19.0.2'
+              implementation 'com.google.android.gms:play-services-mlkit-text-recognition-devanagari:16.0.2' '''
+              for b in bundled:
+                  if b in s:
+                      s = s.replace(b, '', 1)
+                      changed.append('app: dropped bundled model')
+              if 'play-services-mlkit-text-recognition' not in s:
+                  s = s.replace('dependencies {', 'dependencies {\n' + wanted, 1)
+                  changed.append('app: play services models')
+              app.write_text(s)
+
+          # ---------- 3. ask Play Services to fetch the models when the app is installed
+          mf = pathlib.Path('android/app/src/main/AndroidManifest.xml')
+          if mf.exists():
+              x = mf.read_text()
+              if 'com.google.mlkit.vision.DEPENDENCIES' not in x:
+                  x = x.replace('<application',
+                                '<application', 1)
+                  x = re.sub(r'(<application[^>]*>)',
+                             r'\1\n        <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" '
+                             r'android:value="ocr,ocr_devanagari" />', x, count=1)
+                  mf.write_text(x)
+                  changed.append('manifest: model download')
+
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_mlkit2.py
 
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
