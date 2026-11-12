@@ -768,8 +768,8 @@ jobs:
               private var lastError = ""
 
               private const val DET_MAX_SIDE = 1536
-              private const val DB_THRESH = 0.3f
-              private const val BOX_THRESH = 0.6f
+              private const val DB_THRESH = 0.2f
+              private const val BOX_THRESH = 0.3f
               private const val MIN_SIDE = 3
               private const val REC_H = 48
               private const val REC_MAX_W = 1024
@@ -1039,13 +1039,14 @@ jobs:
                       val bh = maxY - minY + 1
                       if (bw < MIN_SIDE || bh < MIN_SIDE) continue
                       if (count == 0 || sum / count < BOX_THRESH) continue
-                      val pad = 2
+                      val padX = maxOf(2, (bw * 0.08f).toInt())
+                      val padY = maxOf(2, (bh * 0.12f).toInt())
                       out.add(
                           Box(
-                              maxOf(0, ((minX - pad) * sx).toInt()),
-                              maxOf(0, ((minY - pad) * sy).toInt()),
-                              minOf((w * sx).toInt(), ((maxX + pad) * sx).toInt()),
-                              minOf((h * sy).toInt(), ((maxY + pad) * sy).toInt())
+                              maxOf(0, ((minX - padX) * sx).toInt()),
+                              maxOf(0, ((minY - padY) * sy).toInt()),
+                              minOf((w * sx).toInt(), ((maxX + padX) * sx).toInt()),
+                              minOf((h * sy).toInt(), ((maxY + padY) * sy).toInt())
                           )
                       )
                   }
@@ -1212,12 +1213,17 @@ jobs:
             /// Reads one page with the new on-device engine, and falls back to ML Kit
             /// when the new engine cannot make sense of the page.
             static Future<String> _pageText(File f, String mode) async {
+              String paddle = '';
               try {
                 final t = await _ocrChannel.invokeMethod<String>('ocrImage', {'path': f.path});
                 final clean = (t ?? '').trim();
-                if (clean.isNotEmpty && !clean.startsWith('failed')) return clean;
+                if (!clean.startsWith('failed')) paddle = clean;
               } catch (_) {}
-              return ocrFile(f, mode);
+              // The new engine is still being tuned. When it comes back with very little
+              // text, ask ML Kit as well and keep whichever found more.
+              if (paddle.length >= 120) return paddle;
+              final ml = await ocrFile(f, mode);
+              return ml.trim().length > paddle.length ? ml : paddle;
             }
 
           '''
@@ -1234,6 +1240,53 @@ jobs:
           print('patched:', ', '.join(changed))
           PY
           python3 /tmp/patch_engine.py
+
+      - name: Keep our own reading speed
+        run: |
+          cat > /tmp/patch_rate.py <<'PY'
+          import pathlib
+
+          changed = []
+          p = pathlib.Path('lib/player_page.dart')
+          s = p.read_text()
+
+          # 1. set the rate right before every sentence, so the engine cannot fall back
+          #    to the phone-wide speech rate
+          old = """    await tts.stop();
+              if (text.isEmpty) {
+                _onDone();
+                return;
+              }
+              await tts.speak(text.substring(start));"""
+          new = """    await tts.stop();
+              if (text.isEmpty) {
+                _onDone();
+                return;
+              }
+              // Apply our own speed every time. Some engines otherwise keep the rate
+              // that was set for the screen reader.
+              await tts.setSpeechRate(rate);
+              await tts.setPitch(pitch);
+              await tts.speak(text.substring(start));"""
+          if old in s:
+              s = s.replace(old, new, 1)
+              changed.append('player: rate before speak')
+
+          # 2. a wider range, so a phone whose own rate is slow can still be sped up
+          old2 = """        value: (rate * 100).round(),
+                  min: 10,
+                  max: 100,"""
+          new2 = """        value: (rate * 100).round(),
+                  min: 10,
+                  max: 200,"""
+          if old2 in s:
+              s = s.replace(old2, new2, 1)
+              changed.append('player: speed up to 200')
+
+          p.write_text(s)
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_rate.py
 
       - name: Fetch packages
         run: flutter pub get
