@@ -629,6 +629,7 @@ jobs:
           curl -sL -o assets/ocr/devanagari.ort $BASE/devanagari_PP-OCRv5_mobile_rec.ort
           curl -sL -o assets/ocr/devanagari_dict.txt $BASE/devanagari_PP-OCRv5_mobile_rec_dict.txt
           curl -sL -o assets/ocr/latin.ort $BASE/latin_PP-OCRv5_mobile_rec.ort
+          curl -sL -o assets/ocr/docquad.ort https://raw.githubusercontent.com/egdels/makeacopy/main/app/src/main/assets/docquad/docquadnet256_trained_opset17.ort
           ls -la assets/ocr
           cat > /tmp/patch_paddle.py <<'PY'
           import pathlib
@@ -761,6 +762,7 @@ jobs:
               private var env: OrtEnvironment? = null
               private var det: OrtSession? = null
               private var rec: OrtSession? = null
+              private var quad: OrtSession? = null
               private var dict: List<String> = emptyList()
               private var loaded = false
               private var lastError = ""
@@ -789,6 +791,11 @@ jobs:
                       rec = e.createSession(ctx.assets.open("flutter_assets/assets/ocr/devanagari.ort").readBytes(), opts)
                       dict = ctx.assets.open("flutter_assets/assets/ocr/devanagari_dict.txt")
                           .bufferedReader().readLines().filter { it.isNotEmpty() }
+                      quad = try {
+                          e.createSession(ctx.assets.open("flutter_assets/assets/ocr/docquad.ort").readBytes(), opts)
+                      } catch (t: Throwable) {
+                          null
+                      }
                       loaded = true
                       true
                   } catch (t: Throwable) {
@@ -799,8 +806,146 @@ jobs:
 
               fun readFile(ctx: Context, path: String): String {
                   if (!load(ctx)) return "failed: $lastError"
-                  val bmp = BitmapFactory.decodeFile(path) ?: return "failed: cannot open image"
-                  return readBitmap(ctx, bmp)
+                  val bmp = loadBitmap(path) ?: return "failed: cannot open image"
+                  val straight = warpPage(bmp)
+                  val cut = autoCrop(straight)
+                  return readBitmap(ctx, cut)
+              }
+
+              /** Opens a photo the right way up, using the rotation stored in the file. */
+              private fun loadBitmap(path: String): Bitmap? {
+                  val bmp = BitmapFactory.decodeFile(path) ?: return null
+                  val deg = try {
+                      val ex = android.media.ExifInterface(path)
+                      when (ex.getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1)) {
+                          android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90
+                          android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180
+                          android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270
+                          else -> 0
+                      }
+                  } catch (t: Throwable) {
+                      0
+                  }
+                  if (deg == 0) return bmp
+                  val m = android.graphics.Matrix()
+                  m.postRotate(deg.toFloat())
+                  return Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+              }
+
+              private fun dist(p: FloatArray, a: Int, b: Int): Float {
+                  val dx = p[a * 2] - p[b * 2]
+                  val dy = p[a * 2 + 1] - p[b * 2 + 1]
+                  return kotlin.math.sqrt(dx * dx + dy * dy)
+              }
+
+              /** Finds the four corners of the page and straightens it. Falls back to the
+               *  photo as it is when the model is not sure. */
+              private fun warpPage(src: Bitmap): Bitmap {
+                  val s = quad ?: return src
+                  val e = env ?: return src
+                  return try {
+                      val scale = minOf(256f / src.width, 256f / src.height)
+                      val nw = (src.width * scale).toInt().coerceAtLeast(1)
+                      val nh = (src.height * scale).toInt().coerceAtLeast(1)
+                      val ox = (256 - nw) / 2
+                      val oy = (256 - nh) / 2
+                      val canvas = Bitmap.createBitmap(256, 256, Bitmap.Config.ARGB_8888)
+                      val c = android.graphics.Canvas(canvas)
+                      c.drawColor(android.graphics.Color.BLACK)
+                      c.drawBitmap(
+                          src, null, android.graphics.Rect(ox, oy, ox + nw, oy + nh),
+                          android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+                      )
+                      val px = IntArray(256 * 256)
+                      canvas.getPixels(px, 0, 256, 0, 0, 256, 256)
+                      val data = FloatArray(3 * 256 * 256)
+                      for (i in 0 until 256 * 256) {
+                          val p = px[i]
+                          data[i] = ((p shr 16) and 0xFF) / 255f
+                          data[256 * 256 + i] = ((p shr 8) and 0xFF) / 255f
+                          data[2 * 256 * 256 + i] = (p and 0xFF) / 255f
+                      }
+                      OnnxTensor.createTensor(e, FloatBuffer.wrap(data), longArrayOf(1, 3, 256, 256)).use { t ->
+                          s.run(Collections.singletonMap("input", t)).use { out ->
+                              val res = out.get("corner_heatmaps").orElse(null) ?: return src
+                              val o = res.value
+                              if (o !is Array<*>) return src
+                              val chans = o[0] as? Array<*> ?: return src
+                              val pts = FloatArray(8)
+                              for (ci in 0 until 4) {
+                                  val grid = chans[ci] as? Array<FloatArray> ?: return src
+                                  var bi = 0
+                                  var bj = 0
+                                  var bv = -1e9f
+                                  for (i in 0 until 64) {
+                                      val row = grid[i]
+                                      for (j in 0 until 64) {
+                                          if (row[j] > bv) {
+                                              bv = row[j]
+                                              bi = i
+                                              bj = j
+                                          }
+                                      }
+                                  }
+                                  pts[ci * 2] = ((bj + 0.5f) * 4f - ox) / scale
+                                  pts[ci * 2 + 1] = ((bi + 0.5f) * 4f - oy) / scale
+                              }
+                              val w = maxOf(dist(pts, 0, 1), dist(pts, 3, 2))
+                              val h = maxOf(dist(pts, 0, 3), dist(pts, 1, 2))
+                              if (w < src.width * 0.25f || h < src.height * 0.25f) return src
+                              val dst = floatArrayOf(0f, 0f, w, 0f, w, h, 0f, h)
+                              val m = android.graphics.Matrix()
+                              if (!m.setPolyToPoly(pts, 0, dst, 0, 4)) return src
+                              Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+                          }
+                      }
+                  } catch (t: Throwable) {
+                      src
+                  }
+              }
+
+              /** Cuts away the table, the desk or the dark background around the page. */
+              private fun autoCrop(src: Bitmap): Bitmap {
+                  val w = src.width
+                  val h = src.height
+                  if (w < 32 || h < 32) return src
+                  val px = IntArray(w * h)
+                  src.getPixels(px, 0, w, 0, 0, w, h)
+                  fun lum(i: Int): Int {
+                      val p = px[i]
+                      return (((p shr 16) and 0xFF) * 299 + ((p shr 8) and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
+                  }
+                  val corners = intArrayOf(lum(0), lum(w - 1), lum((h - 1) * w), lum(w * h - 1))
+                  corners.sort()
+                  val bg = corners[1]
+                  val tol = 28
+                  val step = maxOf(1, minOf(w, h) / 200)
+                  var minX = w
+                  var minY = h
+                  var maxX = -1
+                  var maxY = -1
+                  var y = 0
+                  while (y < h) {
+                      var x = 0
+                      while (x < w) {
+                          if (kotlin.math.abs(lum(y * w + x) - bg) > tol) {
+                              if (x < minX) minX = x
+                              if (x > maxX) maxX = x
+                              if (y < minY) minY = y
+                              if (y > maxY) maxY = y
+                          }
+                          x += step
+                      }
+                      y += step
+                  }
+                  if (maxX <= minX || maxY <= minY) return src
+                  val m = maxOf(4, minOf(w, h) / 100)
+                  val l = maxOf(0, minX - m)
+                  val t = maxOf(0, minY - m)
+                  val r = minOf(w, maxX + m)
+                  val b = minOf(h, maxY + m)
+                  if ((r - l) < w * 0.3 || (b - t) < h * 0.3) return src
+                  return Bitmap.createBitmap(src, l, t, r - l, b - t)
               }
 
               fun readBitmap(ctx: Context, src: Bitmap): String {
@@ -1047,6 +1192,48 @@ jobs:
           print('patched:', ', '.join(changed) if changed else 'nothing')
           PY
           python3 /tmp/patch_paddle2.py
+
+      - name: Read PDF pages with the new engine
+        run: |
+          cat > /tmp/patch_engine.py <<'PY'
+          import pathlib
+
+          changed = []
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          if "voiceleaf/ocr" not in s:
+              if "import 'package:flutter/services.dart';" not in s:
+                  s = s.replace("import 'dart:ui' as ui;", "import 'dart:ui' as ui;\nimport 'package:flutter/services.dart';", 1)
+                  changed.append('extractors: services import')
+
+              helper = '''  static const MethodChannel _ocrChannel = MethodChannel('voiceleaf/ocr');
+
+            /// Reads one page with the new on-device engine, and falls back to ML Kit
+            /// when the new engine cannot make sense of the page.
+            static Future<String> _pageText(File f, String mode) async {
+              try {
+                final t = await _ocrChannel.invokeMethod<String>('ocrImage', {'path': f.path});
+                final clean = (t ?? '').trim();
+                if (clean.isNotEmpty && !clean.startsWith('failed')) return clean;
+              } catch (_) {}
+              return ocrFile(f, mode);
+            }
+
+          '''
+              anchor = "  /// Reads one image on the phone with Google ML Kit (offline)."
+              if anchor in s:
+                  s = s.replace(anchor, helper + anchor, 1)
+                  changed.append('extractors: page reader')
+
+          s = s.replace('final lt = await ocrFile(lf, mode);', 'final lt = await _pageText(lf, mode);')
+          s = s.replace('final rt = await ocrFile(rf, mode);', 'final rt = await _pageText(rf, mode);')
+          s = s.replace('text = await ocrFile(f, mode);', 'text = await _pageText(f, mode);')
+          ex.write_text(s)
+          changed.append('extractors: pdf uses new engine')
+          print('patched:', ', '.join(changed))
+          PY
+          python3 /tmp/patch_engine.py
 
       - name: Fetch packages
         run: flutter pub get
