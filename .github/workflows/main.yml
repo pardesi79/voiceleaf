@@ -804,12 +804,13 @@ jobs:
                   }
               }
 
-              fun readFile(ctx: Context, path: String): String {
+              fun readFile(ctx: Context, path: String, prep: Boolean): String {
                   if (!load(ctx)) return "failed: $lastError"
                   val bmp = loadBitmap(path) ?: return "failed: cannot open image"
-                  val straight = warpPage(bmp)
-                  val cut = autoCrop(straight)
-                  return readBitmap(ctx, cut)
+                  // Only camera photos need straightening and trimming. A page that came
+                  // out of a PDF is already flat and must be left alone.
+                  val ready = if (prep) autoCrop(warpPage(bmp)) else bmp
+                  return readBitmap(ctx, ready)
               }
 
               /** Opens a photo the right way up, using the rotation stored in the file. */
@@ -1124,10 +1125,11 @@ jobs:
                               "status" -> result.success(PaddleOcr.status(this@MainActivity))
                               "ocrImage" -> {
                                   val path = call.argument<String>("path")
+                                  val prep = call.argument<Boolean>("prep") ?: false
                                   if (path == null) {
                                       result.success("no path given")
                                   } else {
-                                      result.success(PaddleOcr.readFile(this@MainActivity, path))
+                                      result.success(PaddleOcr.readFile(this@MainActivity, path, prep))
                                   }
                               }
                               else -> result.notImplemented()
@@ -1287,6 +1289,153 @@ jobs:
           print('patched:', ', '.join(changed) if changed else 'nothing')
           PY
           python3 /tmp/patch_rate.py
+
+      - name: Read real text from PDFs that already have it
+        run: |
+          cat > /tmp/patch_textlayer.py <<'PY'
+          import pathlib
+
+          changed = []
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          old = """        final page = await doc.getPage(i);
+                  final w = page.width;
+                  final h = page.height;"""
+          new = """        final page = await doc.getPage(i);
+                  // A PDF that already carries real text needs no OCR at all: read the
+                  // text exactly as it is, which is also far quicker.
+                  var layer = '';
+                  try {
+                    layer = (await page.text).text.trim();
+                  } catch (_) {}
+                  if (layer.length > 40) {
+                    onProgress(i - from + 1, total, layer.length);
+                    pages.addAll(paginate(pageNumbers ? 'Page $i.\\n$layer' : layer));
+                    await page.close();
+                    continue;
+                  }
+                  final w = page.width;
+                  final h = page.height;"""
+          if old in s and 'page.text' not in s:
+              s = s.replace(old, new, 1)
+              changed.append('extractors: read the text layer first')
+
+          ex.write_text(s)
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_textlayer.py
+
+      - name: Take the OCR models from Play Services instead of the APK
+        run: |
+          cat > /tmp/patch_mlkit.py <<'PY'
+          import os, pathlib
+
+          changed = []
+
+          app = None
+          for name in ('android/app/build.gradle.kts', 'android/app/build.gradle'):
+              if os.path.exists(name):
+                  app = pathlib.Path(name)
+                  break
+          root = None
+          for name in ('android/build.gradle.kts', 'android/build.gradle'):
+              if os.path.exists(name):
+                  root = pathlib.Path(name)
+                  break
+          if app is None:
+              raise SystemExit('app gradle not found')
+
+          kts = app.name.endswith('.kts')
+          s = app.read_text()
+
+          if kts:
+              drop = [
+                  'implementation("com.google.mlkit:text-recognition:16.0.1")',
+                  'implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")',
+                  'implementation("com.google.mlkit:text-recognition-chinese:16.0.1")',
+                  'implementation("com.google.mlkit:text-recognition-japanese:16.0.1")',
+                  'implementation("com.google.mlkit:text-recognition-korean:16.0.1")',
+              ]
+              add = """    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
+                  implementation("com.google.android.gms:play-services-mlkit-text-recognition-devanagari:16.0.0")"""
+          else:
+              drop = [
+                  "implementation 'com.google.mlkit:text-recognition:16.0.1'",
+                  "implementation 'com.google.mlkit:text-recognition-devanagari:16.0.1'",
+                  "implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'",
+                  "implementation 'com.google.mlkit:text-recognition-japanese:16.0.1'",
+                  "implementation 'com.google.mlkit:text-recognition-korean:16.0.1'",
+              ]
+              add = """    implementation 'com.google.android.gms:play-services-mlkit-text-recognition:19.0.1'
+                  implementation 'com.google.android.gms:play-services-mlkit-text-recognition-devanagari:16.0.0'"""
+
+          for d in drop:
+              if d in s:
+                  s = s.replace(d, '', 1)
+                  changed.append('removed bundled script')
+          if 'play-services-mlkit-text-recognition' not in s:
+              s = s.replace('dependencies {', 'dependencies {\n        ' + add, 1)
+              changed.append('added play services mlkit')
+          app.write_text(s)
+
+          if root is not None:
+              r = root.read_text()
+              if 'text-recognition-chinese' not in r:
+                  if root.name.endswith('.kts'):
+                      extra = """
+          allprojects {
+              configurations.all {
+                  exclude(mapOf("group" to "com.google.mlkit", "module" to "text-recognition"))
+                  exclude(mapOf("group" to "com.google.mlkit", "module" to "text-recognition-devanagari"))
+                  exclude(mapOf("group" to "com.google.mlkit", "module" to "text-recognition-chinese"))
+                  exclude(mapOf("group" to "com.google.mlkit", "module" to "text-recognition-japanese"))
+                  exclude(mapOf("group" to "com.google.mlkit", "module" to "text-recognition-korean"))
+              }
+          }
+          """
+                  else:
+                      extra = """
+          allprojects {
+              configurations.all {
+                  exclude group: 'com.google.mlkit', module: 'text-recognition'
+                  exclude group: 'com.google.mlkit', module: 'text-recognition-devanagari'
+                  exclude group: 'com.google.mlkit', module: 'text-recognition-chinese'
+                  exclude group: 'com.google.mlkit', module: 'text-recognition-japanese'
+                  exclude group: 'com.google.mlkit', module: 'text-recognition-korean'
+              }
+          }
+          """
+                  root.write_text(r + extra)
+                  changed.append('root: excluded bundled models')
+
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_mlkit.py
+
+      - name: Clearer names for the two engine buttons
+        run: |
+          cat > /tmp/patch_rename.py <<'PY'
+          import pathlib
+
+          changed = []
+          pp = pathlib.Path('lib/preferences_page.dart')
+          s = pp.read_text()
+
+          pairs = [
+              ("const Tx('Test new OCR engine')", "const Tx('Check the new OCR engine is ready')"),
+              ("const Tx('Test new engine on a page')", "const Tx('Read a test page with the new engine')"),
+              ("const Tx('New OCR engine')", "const Tx('Engine check')"),
+              ("const Tx('New engine on a page')", "const Tx('Test page result')"),
+          ]
+          for a, b in pairs:
+              if a in s:
+                  s = s.replace(a, b)
+                  changed.append(b)
+          pp.write_text(s)
+          print('patched:', len(changed))
+          PY
+          python3 /tmp/patch_rename.py
 
       - name: Fetch packages
         run: flutter pub get
