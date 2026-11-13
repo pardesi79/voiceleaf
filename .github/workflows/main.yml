@@ -1552,6 +1552,75 @@ jobs:
           PY
           python3 /tmp/patch_autolang.py
 
+      - name: Keep PDF words together
+        run: |
+          cat > /tmp/patch_tidypdf.py <<'PY'
+          import pathlib
+
+          changed = []
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # 1. a helper that rebuilds readable lines from the raw characters
+          anchor = "  /// Turns one rendered page into PNG bytes, which both engines understand."
+          helper = '''  /// Rebuilds readable lines from a PDF's raw text. The characters come out in
+            /// drawing order, so joining them as they are breaks words apart. Putting
+            /// them back by their own position keeps the words whole.
+            static String _tidyLayer(PdfPageRawText t) {
+              final text = t.fullText;
+              final rects = t.charRects;
+              final runes = text.runes.toList();
+              if (rects.isEmpty || rects.length != runes.length) {
+                return text.replaceAll(RegExp(r'[ \\t]+'), ' ').trim();
+              }
+              final order = List<int>.generate(rects.length, (i) => i);
+              order.sort((a, b) {
+                final dy = rects[a].top - rects[b].top;
+                if (dy.abs() > 2.5) return dy > 0 ? -1 : 1;
+                return rects[a].left.compareTo(rects[b].left);
+              });
+              final sb = StringBuffer();
+              double? lastTop;
+              double? lastRight;
+              for (final i in order) {
+                final r = rects[i];
+                final h = (r.top - r.bottom).abs();
+                if (lastTop != null && (r.top - lastTop).abs() > 2.5) {
+                  sb.write('\\n');
+                } else if (lastRight != null && (r.left - lastRight) > h * 0.28) {
+                  sb.write(' ');
+                }
+                sb.writeCharCode(runes[i]);
+                lastTop = r.top;
+                lastRight = r.right;
+              }
+              return sb.toString().replaceAll(RegExp(r'[ \\t]{2,}'), ' ').trim();
+            }
+
+          '''
+          if '_tidyLayer' not in s and anchor in s:
+              s = s.replace(anchor, helper + anchor, 1)
+              changed.append('extractors: tidy layer helper')
+
+          # 2. use it instead of the raw dump
+          old = """        var layer = '';
+                  try {
+                    layer = (await page.loadText())?.fullText.trim() ?? '';
+                  } catch (_) {}"""
+          new = """        var layer = '';
+                  try {
+                    final raw = await page.loadText();
+                    layer = raw == null ? '' : _tidyLayer(raw);
+                  } catch (_) {}"""
+          if old in s:
+              s = s.replace(old, new, 1)
+              changed.append('extractors: use tidy text')
+
+          ex.write_text(s)
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_tidypdf.py
+
       - name: Fetch packages
         run: flutter pub get
 
