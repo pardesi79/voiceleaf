@@ -1725,6 +1725,57 @@ jobs:
           PY
           python3 /tmp/patch_flow.py
 
+      - name: Repair Hindi words after reading
+        run: |
+          cat > /tmp/patch_indic.py <<'PY'
+          import pathlib
+
+          changed = []
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          helper = '''/// Small repairs that Indian scripts need after OCR or text extraction.
+          /// A vowel mark that got separated from its letter, a word broken by a hyphen
+          /// at the end of a line, and stray bars used instead of a Hindi full stop.
+          String repairIndic(String input) {
+            var t = input;
+            // a word split across lines: "पुस्त-" then "क"
+            t = t.replaceAll(RegExp(r'[-\\u2010\\u2011]\\s*\\n\\s*'), '');
+            // a vowel mark or virama that lost its letter: "पु स्तक" -> "पुस्तक"
+            t = t.replaceAll(RegExp(r'([\\u0900-\\u097F])\\s+([\\u093E-\\u094D\\u0900-\\u0903])'), r'$1$2');
+            // a bar instead of the Hindi full stop
+            t = t.replaceAll(RegExp(r'\\|\\|\\|'), '\\u0965');
+            t = t.replaceAll(RegExp(r'\\|'), '\\u0964');
+            t = t.replaceAll(RegExp(r'\\u0964{3,}'), '\\u0965');
+            // leftover double spaces
+            t = t.replaceAll(RegExp(r'[ \\t]{2,}'), ' ');
+            return t;
+          }
+
+          '''
+
+          anchor = 'List<String> paginate(String raw, {int maxLen = 1800}) {'
+          if 'repairIndic' not in s and anchor in s:
+              s = s.replace(anchor, helper + anchor, 1)
+              changed.append('extractors: repairIndic helper')
+
+          old = """  final text = raw
+                .replaceAll('\\r', '')
+                .replaceAll(RegExp(r'[ \\t]+'), ' ')
+                .trim();"""
+          new = """  final text = repairIndic(raw
+                .replaceAll('\\r', '')
+                .replaceAll(RegExp(r'[ \\t]+'), ' '))
+                .trim();"""
+          if old in s:
+              s = s.replace(old, new, 1)
+              changed.append('extractors: paginate uses repair')
+
+          ex.write_text(s)
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_indic.py
+
       - name: Pause must really pause
         run: |
           cat > /tmp/patch_fixes.py <<'PY'
