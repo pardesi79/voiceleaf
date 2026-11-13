@@ -2153,9 +2153,9 @@ jobs:
           s = g.read_text()
           if 'pdfbox' not in s:
               if g.name.endswith('.kts'):
-                  dep = '    implementation("com.tom-roush:pdfbox-android:2.0.27.0")\n'
+                  dep = '    implementation("com.tom-roush:pdfbox-android:1.8.10.3")\n'
               else:
-                  dep = "    implementation 'com.tom-roush:pdfbox-android:2.0.27.0'\n"
+                  dep = "    implementation 'com.tom-roush:pdfbox-android:1.8.10.3'\n"
               if 'dependencies {' in s:
                   s = s.replace('dependencies {', 'dependencies {\n' + dep, 1)
               else:
