@@ -2134,6 +2134,120 @@ jobs:
           PY
           python3 /tmp/patch_layer2.py
 
+      - name: Read the PDF's own text with PdfBox
+        run: |
+          cat > /tmp/patch_pdfbox.py <<'PY'
+          import pathlib, re
+
+          changed = []
+
+          # ---------- 1. the PdfBox library, the same one InstaReader uses
+          g = None
+          for cand in ('android/app/build.gradle.kts', 'android/app/build.gradle'):
+              if pathlib.Path(cand).exists():
+                  g = pathlib.Path(cand)
+                  break
+          if g is None:
+              print('no gradle file found')
+              raise SystemExit(1)
+          s = g.read_text()
+          if 'pdfbox' not in s:
+              dep = "    implementation 'com.tom-roush:pdfbox-android:2.0.27.0'\n"
+              if 'dependencies {' in s:
+                  s = s.replace('dependencies {', 'dependencies {\n' + dep, 1)
+              else:
+                  s += '\ndependencies {\n' + dep + '}\n'
+              g.write_text(s)
+              changed.append('gradle: pdfbox')
+
+          # ---------- 2. a small bridge that reads one page of a PDF
+          kt = None
+          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              kt = p
+          if kt:
+              t = kt.read_text()
+              if 'voiceleaf/pdftext' not in t:
+                  bridge = '''    override fun configureFlutterEngine(flutterEngine: io.flutter.embedding.engine.FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+                  io.flutter.plugin.common.MethodChannel(
+                      flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/pdftext"
+                  ).setMethodCallHandler { call, result ->
+                      if (call.method != "page") {
+                          result.notImplemented()
+                          return@setMethodCallHandler
+                      }
+                      val path = call.argument<String>("path")
+                      val index = call.argument<Int>("index") ?: 0
+                      try {
+                          com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(applicationContext)
+                          val doc = com.tom_roush.pdfbox.pdmodel.PDDocument.load(java.io.File(path))
+                          try {
+                              val s = com.tom_roush.pdfbox.text.PDFTextStripper()
+                              s.startPage = index + 1
+                              s.endPage = index + 1
+                              result.success(s.getText(doc))
+                          } finally {
+                              doc.close()
+                          }
+                      } catch (e: Throwable) {
+                          result.success("")
+                      }
+                  }
+              }
+
+          '''
+                  marker = '    private fun queryName(uri: Uri): String? {'
+                  if marker in t:
+                      t = t.replace(marker, bridge + marker, 1)
+                  else:
+                      t = t.replace('\n}', '\n\n' + bridge + '}\n', 1)
+                  kt.write_text(t)
+                  changed.append('MainActivity: pdf bridge')
+
+          # ---------- 3. ask the bridge before falling back to OCR
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          helper = '''  static const MethodChannel _pdfText =
+                MethodChannel('voiceleaf/pdftext');
+
+            /// Reads a page's own text with PdfBox. A PDF that already carries text
+            /// needs no OCR, and its words come out exactly as printed.
+            static Future<String> pdfTextOf(String path, int index) async {
+              try {
+                final t = await _pdfText.invokeMethod<String>('page', {
+                  'path': path,
+                  'index': index,
+                });
+                return (t ?? '').trim();
+              } catch (_) {
+                return '';
+              }
+            }
+
+          '''
+          anchor = "  /// Reads one image on the phone with Google ML Kit (offline)."
+          if 'pdfTextOf' not in s and anchor in s:
+              s = s.replace(anchor, helper + anchor, 1)
+              changed.append('extractors: pdf text bridge')
+
+          old = """        var layer = '';
+                  try {"""
+          new = """        var layer = await pdfTextOf(path, i - 1);
+                  if (layer.length > 40) {
+                    pages.add(repairIndic(pageNumbers ? 'Page $i.\\n$layer' : layer));
+                    onProgress(i - from + 1, total, layer.length);
+                    continue;
+                  }
+                  try {"""
+          if old in s and 'pdfTextOf(path, i - 1)' not in s:
+              s = s.replace(old, new, 1)
+              changed.append('extractors: pdf text first')
+
+          ex.write_text(s)
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_pdfbox.py
+
       - name: Fetch packages
         run: flutter pub get
 
