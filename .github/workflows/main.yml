@@ -2389,6 +2389,65 @@ jobs:
           PY
           python3 /tmp/patch_drop_helper.py
 
+      - name: Stop taking text out of the PDF
+        run: |
+          cat > /tmp/patch_nopdfbox.py <<'PY'
+          import pathlib, re
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          before = s
+
+          # This PDF writes some of its own letters as "no character", so the text taken
+          # out of it comes back with blanks where the vowel marks belong. Read the page
+          # from its picture instead.
+          s = re.sub(r'(var|String)\s+layer\s*=\s*await\s+pdfTextOf\([^;]*\);', r"\1 layer = '';", s)
+
+          ex.write_text(s)
+          print('pdfTextOf calls left:', s.count('pdfTextOf'), '| changed:', s != before)
+          PY
+          python3 /tmp/patch_nopdfbox.py
+
+      - name: Always read the page from its picture
+        run: |
+          cat > /tmp/patch_no_layer.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          before = s
+
+          # This PDF writes part of its own letters as "no character", so the text taken
+          # out of it comes back with a hole where the vowel mark belongs. The picture of
+          # the page has no such fault, so read the page from its picture every time.
+          old1 = """        var layer = '';
+                  try {
+                    final raw = await page.loadText();
+                    layer = raw == null ? '' : _tidyLayer(raw);
+                  } catch (_) {}
+          """
+          if old1 in s:
+              s = s.replace(old1, '', 1)
+
+          old2 = """        if (layer.length > 40) {
+                    pages.add(repairIndic(pageNumbers ? 'Page $i.\\n$layer' : layer));
+                    onProgress(i - from + 1, total, layer.length);
+                    continue;
+                  }
+          """
+          if old2 in s:
+              s = s.replace(old2, '', 1)
+
+          # the comment above it described the removed path
+          s = s.replace("""        // A PDF that already carries real text needs no OCR at all: read it
+                  // exactly as it is, which is also far quicker.
+          """, "")
+
+          ex.write_text(s)
+          print('loadText calls left:', s.count('loadText'), '| layer refs left:', s.count('layer'), '| changed:', s != before)
+          PY
+          python3 /tmp/patch_no_layer.py
+
       - name: Fetch packages
         run: flutter pub get
 
