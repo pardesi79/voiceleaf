@@ -1911,6 +1911,26 @@ jobs:
           PY
           python3 /tmp/patch_words.py
 
+      - name: Go back to the plain ML Kit text
+        run: |
+          cat > /tmp/patch_revert_words.py <<'PY'
+          import pathlib
+
+          changed = []
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # The word-box rebuild lost characters, so go back to the plain text that
+          # ML Kit gives. That is exactly what the early working builds used.
+          if 'return _textFromResult(t);' in s:
+              s = s.replace('return _textFromResult(t);', 'return t.text;', 1)
+              changed.append('extractors: plain text again')
+
+          ex.write_text(s)
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_revert_words.py
+
       - name: Fetch packages
         run: flutter pub get
 
