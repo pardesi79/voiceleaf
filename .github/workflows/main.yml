@@ -1837,6 +1837,78 @@ jobs:
           PY
           python3 /tmp/patch_fixes.py
 
+      - name: Rebuild words from their own boxes
+        run: |
+          cat > /tmp/patch_words.py <<'PY'
+          import pathlib
+
+          changed = []
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # ---------- 1. rebuild the text from the words and their positions
+          anchor = "  /// Reads one image on the phone with Google ML Kit (offline)."
+          helper = '''  /// ML Kit hands back words with their own boxes. Rebuilding the line from
+            /// those boxes keeps words apart only where there is a real gap, so Hindi
+            /// matras stop being split off with a space of their own.
+            static String _textFromResult(RecognizedText t) {
+              final out = StringBuffer();
+              for (final b in t.blocks) {
+                for (final l in b.lines) {
+                  final els = l.elements;
+                  if (els.isEmpty) {
+                    if (l.text.trim().isNotEmpty) out.writeln(l.text.trim());
+                    continue;
+                  }
+                  TextElement? prev;
+                  for (final e in els) {
+                    if (prev != null) {
+                      final pr = prev.boundingBox;
+                      final er = e.boundingBox;
+                      final h = (er.bottom - er.top).abs();
+                      final gap = er.left - pr.right;
+                      if (gap > h * 0.45) out.write(' ');
+                    }
+                    out.write(e.text);
+                    prev = e;
+                  }
+                  out.write('\\n');
+                }
+                out.write('\\n');
+              }
+              final rebuilt = out.toString().trim();
+              return rebuilt.isEmpty ? t.text : rebuilt;
+            }
+
+          '''
+          if '_textFromResult' not in s and anchor in s:
+              s = s.replace(anchor, helper + anchor, 1)
+              changed.append('extractors: rebuild from word boxes')
+
+          old_run = """        rec = TextRecognizer(script: _script(m));
+                  final t = await rec.processImage(InputImage.fromFile(f));
+                  return t.text;"""
+          new_run = """        rec = TextRecognizer(script: _script(m));
+                  final t = await rec.processImage(InputImage.fromFile(f));
+                  return _textFromResult(t);"""
+          if old_run in s:
+              s = s.replace(old_run, new_run, 1)
+              changed.append('extractors: use rebuilt text')
+
+          ex.write_text(s)
+
+          # ---------- 2. ML Kit becomes the default engine again
+          pref = pathlib.Path('lib/app_prefs.dart')
+          a = pref.read_text()
+          if "'mlkitOnly': false," in a:
+              a = a.replace("'mlkitOnly': false,", "'mlkitOnly': true,", 1)
+              pref.write_text(a)
+              changed.append('prefs: mlkit only by default')
+
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_words.py
+
       - name: Fetch packages
         run: flutter pub get
 
