@@ -2827,6 +2827,52 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Give the page to the recogniser untouched
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          before = s
+
+          # The build that read conjuncts correctly handed the page picture to the
+          # recogniser untouched: no grayscale, no contrast, no shrinking. Each of those
+          # makes the thin joined strokes harder to tell apart.
+          s = s.replace(
+              "        final bytes = raw.isEmpty ? raw : await _preparePage(raw);",
+              "        final bytes = raw;   // straight from the page, nothing added")
+
+          # and the paper must be white, never see-through
+          old = """    for (var i = 0; i + 3 < bgra.length; i += 4) {
+                rgba[i] = bgra[i + 2];
+                rgba[i + 1] = bgra[i + 1];
+                rgba[i + 2] = bgra[i];
+                rgba[i + 3] = bgra[i + 3];
+              }"""
+          new = """    for (var i = 0; i + 3 < bgra.length; i += 4) {
+                final a = bgra[i + 3];
+                if (a == 255) {
+                  rgba[i] = bgra[i + 2];
+                  rgba[i + 1] = bgra[i + 1];
+                  rgba[i + 2] = bgra[i];
+                } else {
+                  // see-through pixels are laid over white paper
+                  final f = a / 255.0;
+                  rgba[i] = (bgra[i + 2] * f + 255 * (1 - f)).round().clamp(0, 255);
+                  rgba[i + 1] = (bgra[i + 1] * f + 255 * (1 - f)).round().clamp(0, 255);
+                  rgba[i + 2] = (bgra[i] * f + 255 * (1 - f)).round().clamp(0, 255);
+                }
+                rgba[i + 3] = 255;
+              }"""
+          if old in s:
+              s = s.replace(old, new, 1)
+
+          ex.write_text(s)
+          print('preparePage used:', s.count('await _preparePage'), '| white paper:', 'laid over white paper' in s, '| changed:', s != before)
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
