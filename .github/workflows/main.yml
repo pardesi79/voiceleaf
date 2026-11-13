@@ -2798,7 +2798,7 @@ jobs:
       - name: Keep the text exactly as it comes back
         run: |
           cat > /tmp/p.py <<'PY'
-          import pathlib, re
+          import pathlib
 
           ex = pathlib.Path('lib/extractors.dart')
           s = ex.read_text()
@@ -2808,27 +2808,22 @@ jobs:
           # the picture goes to the recogniser, and the words are kept as they arrive.
           # Nothing is joined, split, re-spaced or "repaired".
 
-          # 1. the page of a PDF is stored exactly as it came back
-          s = re.sub(
-              r"pages\.add\(repairIndic\(pageNumbers \? 'Page \$i\.\\n\$text' : text\)\.trim\(\)\);",
-              "pages.add(pageNumbers ? 'Page $i.\\n${text.trim()}' : text.trim());",
-              s)
+          old1 = "          pages.add(repairIndic(pageNumbers ? 'Page $i.\\n$text' : text).trim());"
+          new1 = "          pages.add(pageNumbers ? 'Page $i.\\n${text.trim()}' : text.trim());"
+          if old1 in s:
+              s = s.replace(old1, new1, 1)
 
-          # 2. the image reader keeps its text as it came back too
-          s = s.replace("""  final text = repairIndic(raw
+          old2 = """  final text = repairIndic(raw
                 .replaceAll('\\r', '')
                 .replaceAll(RegExp(r'[ \\t]+'), ' '))
-                .trim();""",
-          """  final text = raw
-                .replaceAll('\\r', '')
-                .trim();""")
-
-          # 3. and no other call may repair it
-          s = s.replace("pages.addAll(paginate(await ocrFile(File(paths[i]), mode)));",
-                        "pages.addAll(paginate(await ocrFile(File(paths[i]), mode)));")
+                .trim();"""
+          new2 = """  final text = raw.replaceAll('\\r', '').trim();"""
+          if old2 in s:
+              s = s.replace(old2, new2, 1)
 
           ex.write_text(s)
-          print('repairIndic calls left:', s.count('repairIndic(') - 1, '| changed:', s != before)
+          print('repairIndic uses left:', s.count('repairIndic(') - 1, '| changed:', s != before)
+          print('newline inside the string:', "'Page $i.\n" in s.replace('\\n', 'X'))
           PY
           python3 /tmp/p.py
 
