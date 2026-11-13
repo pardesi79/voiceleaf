@@ -1,3 +1,4 @@
+# Voiceleaf build v59
 name: Build Voiceleaf APK
 
 on:
@@ -2097,6 +2098,41 @@ jobs:
           print('patched:', ', '.join(changed))
           PY
           python3 /tmp/patch_contrast.py
+
+      - name: Use the PDF's own text when it has one
+        run: |
+          cat > /tmp/patch_layer2.py <<'PY'
+          import pathlib
+
+          changed = []
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # A PDF that already carries its own text needs no OCR at all. Reading it is
+          # exact and instant; running OCR over a picture of it only adds mistakes.
+          old = """        if (text.trim().length < 40 && layer.isNotEmpty) text = layer;"""
+          new = """        if (layer.length > 40) {
+                    pages.add(repairIndic(pageNumbers ? 'Page $i.\\n$layer' : layer));
+                    onProgress(i - from + 1, total, layer.length);
+                    continue;
+                  }"""
+          if old in s:
+              s = s.replace(old, new, 1)
+              changed.append('extractors: own text first')
+
+          # Some PDFs write a vowel mark twice ("सिद्धांांत"). One is enough.
+          old2 = """  // leftover double spaces"""
+          new2 = """  // a vowel mark written twice by the PDF: "सिद्धांांत" -> "सिद्धांत"
+            t = t.replaceAllMapped(RegExp(r'([\\u093E-\\u094D])\\1+'), (m) => m[1]!);
+            // leftover double spaces"""
+          if old2 in s and 'written twice' not in s:
+              s = s.replace(old2, new2, 1)
+              changed.append('extractors: doubled marks')
+
+          ex.write_text(s)
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_layer2.py
 
       - name: Fetch packages
         run: flutter pub get
