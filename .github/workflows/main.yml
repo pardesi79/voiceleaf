@@ -2685,8 +2685,10 @@ jobs:
               # the smoke test that loads an ONNX model
               t = re.sub(r'    private fun smokeTest\(\): String \{.*?\n    \}\n',
                          '    private fun smokeTest(): String = "ML Kit only"\n', t, flags=re.S)
-              # the page reader that used the Paddle engine
+              # every call into the removed engine has to go
               t = re.sub(r'PaddleOcr\.readFile\([^)]*\)', '"failed"', t)
+              t = re.sub(r'PaddleOcr\.status\([^)]*\)', '"ML Kit only"', t)
+              t = re.sub(r'PaddleOcr\.[A-Za-z]+\([^)]*\)', '"failed"', t)
               if 'ai.onnxruntime' in t:
                   t = re.sub(r'.*ai\.onnxruntime[^\n]*\n', '', t)
                   notes.append('onnx lines removed')
