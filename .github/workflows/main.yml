@@ -1614,6 +1614,42 @@ jobs:
           PY
           python3 /tmp/patch_tidypdf.py
 
+      - name: Read the page with OCR first
+        run: |
+          cat > /tmp/patch_ocrfirst.py <<'PY'
+          import pathlib
+
+          changed = []
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # OCR first again: the text inside a PDF can have correct letters but broken
+          # spacing, and the reading voice sounds choppy. Only when OCR finds almost
+          # nothing do we fall back to the PDF's own text.
+          old_skip = """        if (layer.length > 40) {
+                    onProgress(i - from + 1, total, layer.length);
+                    pages.addAll(paginate(pageNumbers ? 'Page $i.\\n$layer' : layer));
+                    continue;
+                  }
+          """
+          if old_skip in s:
+              s = s.replace(old_skip, "", 1)
+              changed.append('extractors: always read the page')
+
+          old_after = """        await f.delete();
+                  onProgress(i - from + 1, total, text.trim().length);"""
+          new_after = """        await f.delete();
+                  if (text.trim().length < 40 && layer.isNotEmpty) text = layer;
+                  onProgress(i - from + 1, total, text.trim().length);"""
+          if old_after in s:
+              s = s.replace(old_after, new_after, 1)
+              changed.append('extractors: text layer as fallback')
+
+          ex.write_text(s)
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_ocrfirst.py
+
       - name: Make the reading flow like a book
         run: |
           cat > /tmp/patch_flow.py <<'PY'
@@ -1698,7 +1734,7 @@ jobs:
           pp = pathlib.Path('lib/player_page.dart')
           p = pp.read_text()
 
-          # 1. pause must really stop the voice
+          # Pause: some engines ignore the first stop, so ask twice with a small gap.
           old_pause = """  Future<void> _pause() async {
               setState(() => playing = false);
               await tts.stop();
@@ -1706,36 +1742,44 @@ jobs:
             }"""
           new_pause = """  Future<void> _pause() async {
               setState(() => playing = false);
-              // Some engines ignore the first stop, so ask twice with a small gap.
               try {
                 await tts.stop();
-                await Future<void>.delayed(const Duration(milliseconds: 120));
+                await Future<void>.delayed(const Duration(milliseconds: 150));
                 await tts.stop();
               } catch (_) {}
               _save();
             }"""
           if old_pause in p:
               p = p.replace(old_pause, new_pause, 1)
-              changed.append('player: pause really stops')
+              changed.append('player: pause asks twice')
 
-          # 2. a finished sentence must not restart reading after a pause
-          if 'ttsRunning' not in p:
-              old_done = """  void _onDone() {
+          # A sentence that ends while we are paused must not start the next one.
+          old_done = """  void _onDone() {
               if (!playing || !mounted) return;"""
-              new_done = """  void _onDone() {
-              if (!playing || !mounted || !ttsRunning) return;"""
-              if old_done in p:
-                  p = p.replace(old_done, new_done, 1)
-                  p = p.replace('  bool playing = false;',
-                                '  bool playing = false;\n  bool ttsRunning = false;', 1)
-                  p = p.replace('    await tts.speak(text.substring(start));',
-                                '    ttsRunning = true;\n    await tts.speak(text.substring(start));', 1)
-                  p = p.replace("""  Future<void> _pause() async {
+          new_done = """  void _onDone() {
+              if (!playing || !mounted) return;
+              if (_pausedByUser) return;"""
+          if old_done in p and '_pausedByUser' not in p:
+              p = p.replace(old_done, new_done, 1)
+              p = p.replace('  bool playing = false;',
+                            '  bool playing = false;\n  bool _pausedByUser = false;', 1)
+              p = p.replace("""  Future<void> _pause() async {
               setState(() => playing = false);""",
-                                """  Future<void> _pause() async {
+                            """  Future<void> _pause() async {
               setState(() => playing = false);
-              ttsRunning = false;""", 1)
-                  changed.append('player: stop flag')
+              _pausedByUser = true;""", 1)
+              p = p.replace("""    setState(() {
+                cur = start;
+                curEnd = start;
+                playing = true;
+              });""",
+                            """    _pausedByUser = false;
+              setState(() {
+                cur = start;
+                curEnd = start;
+                playing = true;
+              });""", 1)
+              changed.append('player: pause flag')
 
           pp.write_text(p)
           print('patched:', ', '.join(changed) if changed else 'nothing')
