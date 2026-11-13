@@ -2873,6 +2873,205 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Sweep out the code nobody calls
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          before = s
+
+          def drop_function(src, header):
+              """Removes a top level or static function together with its doc comment."""
+              i = src.find(header)
+              if i < 0:
+                  return src, False
+              # walk back over the comment block that belongs to it
+              start = i
+              lines = src[:i].split('\n')
+              k = len(lines) - 1
+              while k > 0 and (lines[k-1].strip().startswith('///') or lines[k-1].strip() == ''):
+                  k -= 1
+              start = len('\n'.join(lines[:k]))
+              if start > 0 and src[start] == '\n':
+                  start += 1
+              # find the matching closing brace
+              j = src.index('{', i)
+              depth = 0
+              while j < len(src):
+                  if src[j] == '{':
+                      depth += 1
+                  elif src[j] == '}':
+                      depth -= 1
+                      if depth == 0:
+                          j += 1
+                          break
+                  j += 1
+              # eat the trailing newline
+              while j < len(src) and src[j] == '\n':
+                  j += 1
+              return src[:start] + src[j:], True
+
+          for header in ('String repairIndic(String input) {',
+                         '  static String _textFromResult(RecognizedText t) {',
+                         '  static String _tidyLayer(PdfPageRawText t) {',
+                         '  static Future<Uint8List> _preparePage(Uint8List png) async {'):
+              s, ok = drop_function(s, header)
+              print(('removed ' if ok else 'not found ') + header.strip()[:44])
+
+          ex.write_text(s)
+          print('leftover names:', [n for n in ('repairIndic', '_tidyLayer', '_preparePage', '_textFromResult') if n in s])
+          print('braces:', s.count('{') - s.count('}'))
+          PY
+          python3 /tmp/p.py
+
+      - name: Draw the page with Android, like InstaReader does
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+
+          changed = []
+
+          # ---------- 1. the renderer InstaReader uses: Android's own PdfRenderer
+          p = pathlib.Path('pubspec.yaml')
+          s = p.read_text()
+          s2 = re.sub(r'^  pdfrx:.*$', '  pdfx: ^2.9.2', s, flags=re.M)
+          if s2 != s:
+              p.write_text(s2)
+              changed.append('pubspec: pdfx')
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # ---------- 2. the import
+          s = s.replace("import 'package:pdfrx/pdfrx.dart';", "import 'package:pdfx/pdfx.dart';")
+
+          # ---------- 3. page count
+          old = """  static Future<int> pdfPageCount(String path) async {
+              final doc = await PdfDocument.openFile(path);
+              final n = doc.pages.length;
+              await doc.dispose();
+              return n;
+            }"""
+          new = """  static Future<int> pdfPageCount(String path) async {
+              final doc = await PdfDocument.openFile(path);
+              final n = doc.pagesCount;
+              await doc.close();
+              return n;
+            }"""
+          if old in s:
+              s = s.replace(old, new, 1)
+              changed.append('page count')
+
+          # ---------- 4. the page loop, drawn by Android instead of pdfium
+          old2 = """    final doc = await PdfDocument.openFile(path);
+              final tmp = await getTemporaryDirectory();
+              final pages = <String>[];
+              try {
+                final total = to - from + 1;
+                var empty = 0;
+                for (var i = from; i <= to; i++) {
+                  onProgress(i - from + 1, total, -1);
+                  final page = doc.pages[i - 1];
+                  final w = page.width;
+                  final h = page.height;
+                  final raw = await _pagePng(page);
+                  final bytes = raw;   // straight from the page, nothing added
+                  if (bytes.isEmpty) {"""
+          new2 = """    final doc = await PdfDocument.openFile(path);
+              final tmp = await getTemporaryDirectory();
+              final pages = <String>[];
+              try {
+                final total = to - from + 1;
+                var empty = 0;
+                for (var i = from; i <= to; i++) {
+                  onProgress(i - from + 1, total, -1);
+                  final page = await doc.getPage(i);
+                  final w = page.width;
+                  final h = page.height;
+                  // Android's own PdfRenderer draws the page, the same way InstaReader
+                  // draws it. The picture goes to the recogniser untouched.
+                  var shot = await page.render(
+                    width: w * 2,
+                    height: h * 2,
+                    format: PdfPageImageFormat.png,
+                    backgroundColor: '#FFFFFF',
+                  );
+                  if (shot == null || shot.bytes.isEmpty) {
+                    shot = await page.render(
+                      width: w,
+                      height: h,
+                      format: PdfPageImageFormat.jpeg,
+                      quality: 90,
+                      backgroundColor: '#FFFFFF',
+                    );
+                  }
+                  await page.close();
+                  final bytes = shot == null ? Uint8List(0) : shot.bytes;
+                  if (bytes.isEmpty) {"""
+          if old2 in s:
+              s = s.replace(old2, new2, 1)
+              changed.append('page loop uses Android renderer')
+
+          # ---------- 5. closing the document
+          s = s.replace("      await doc.dispose();\n    }\n    return pages;\n  }",
+                        "      await doc.close();\n    }\n    return pages;\n  }", 1)
+
+          # ---------- 6. the pdfium-only helper is no longer needed
+          s = re.sub(r'\n  /// Turns one rendered page into PNG bytes.*?\n  static Future<Uint8List> _pagePng\(PdfPage page\) async \{.*?\n  \}\n',
+                     '\n', s, flags=re.S)
+
+
+          # ---------- 7. the helper that took a pdfium text object must go with it
+          s = re.sub(r'\n  /// Puts the broken lines back together.*?\n  static String _tidyLayer\(PdfPageRawText t\) \{.*?\n  \}\n',
+                     '\n', s, flags=re.S)
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          print('pdfrx left:', s.count('pdfrx'), '| _pagePng left:', s.count('_pagePng'), '| dispose left:', s.count('doc.dispose'))
+          PY
+          python3 /tmp/p.py
+
+      - name: Take out what nothing uses any more
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+
+          changed = []
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # two packages are no longer touched anywhere: the picture is not altered now
+          for imp in ("import 'package:flutter_image_compress/flutter_image_compress.dart';\n",
+                      "import 'package:image/image.dart' as im;\n"):
+              if imp in s:
+                  s = s.replace(imp, '')
+                  changed.append('import dropped: ' + imp.split('/')[1])
+
+          # and this helper is never called
+          s2 = re.sub(r'\n  static double _share\(String t, bool Function\(int\) inScript\) \{.*?\n  \}\n',
+                      '\n', s, flags=re.S)
+          if s2 != s:
+              changed.append('_share removed')
+              s = s2
+
+          ex.write_text(s)
+
+          # the packages can go from the manifest too
+          p = pathlib.Path('pubspec.yaml')
+          y = p.read_text()
+          for line in ('  image: ^4.2.0\n', '  flutter_image_compress: ^2.3.0\n'):
+              if line in y:
+                  y = y.replace(line, '')
+                  changed.append('pubspec: ' + line.strip().split(':')[0])
+          p.write_text(y)
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          print('image import left:', 'package:image/image.dart' in s, '| compress left:', 'flutter_image_compress' in s, '| _share left:', '_share' in s)
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
