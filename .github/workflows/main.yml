@@ -1931,6 +1931,78 @@ jobs:
           PY
           python3 /tmp/patch_revert_words.py
 
+      - name: Clean each page before reading it
+        run: |
+          cat > /tmp/patch_prep.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          # 1. the image package, for cleaning a page before it is read
+          p = pathlib.Path('pubspec.yaml')
+          s = p.read_text()
+          if 'image:' not in s:
+              s = s.replace('  archive: ^4.0.9', '  archive: ^4.0.9\n  image: ^4.2.0', 1)
+              if 'image: ^4.2.0' not in s:
+                  s = s.replace('  http: ^1.2.2', '  http: ^1.2.2\n  image: ^4.2.0', 1)
+              p.write_text(s)
+              changed.append('pubspec: image package')
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          if "package:image/image.dart" not in s:
+              s = s.replace("import 'package:flutter/services.dart';",
+                            "import 'package:flutter/services.dart';\nimport 'package:image/image.dart' as im;", 1)
+              changed.append('extractors: image import')
+
+          helper = '''  /// Cleans a page before it is read: grey, and around 1800 pixels wide.
+            /// ML Kit reads best when a character is roughly 16 to 24 pixels tall, and
+            /// grey loses nothing while halving the work.
+            static Future<Uint8List> _preparePage(Uint8List png) async {
+              try {
+                final src = im.decodeImage(png);
+                if (src == null) return png;
+                var out = im.grayscale(src);
+                const wide = 1600;
+                const narrow = 1100;
+                if (out.width > wide) {
+                  final h = (out.height * wide / out.width).round();
+                  out = im.copyResize(out,
+                      width: wide, height: h, interpolation: im.Interpolation.average);
+                } else if (out.width < narrow && out.width > 0) {
+                  final h = (out.height * narrow / out.width).round();
+                  if (h < 4000) {
+                    out = im.copyResize(out, width: narrow, height: h,
+                        interpolation: im.Interpolation.linear);
+                  }
+                }
+                return Uint8List.fromList(im.encodePng(out, level: 1));
+              } catch (_) {
+                return png;
+              }
+            }
+
+          '''
+          anchor = "  /// Turns one rendered page into PNG bytes, which both engines understand."
+          if '_preparePage' not in s and anchor in s:
+              s = s.replace(anchor, helper + anchor, 1)
+              changed.append('extractors: page cleaner')
+
+          old = """        final bytes = await _pagePng(page);
+                  if (bytes.isEmpty) {"""
+          new = """        final raw = await _pagePng(page);
+                  final bytes = raw.isEmpty ? raw : await _preparePage(raw);
+                  if (bytes.isEmpty) {"""
+          if old in s:
+              s = s.replace(old, new, 1)
+              changed.append('extractors: clean each page')
+
+          ex.write_text(s)
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_prep.py
+
       - name: Fetch packages
         run: flutter pub get
 
