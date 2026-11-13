@@ -2366,6 +2366,29 @@ jobs:
           PY
           python3 /tmp/patch_plain_text.py
 
+      - name: Remove the leftover helper
+        run: |
+          cat > /tmp/patch_drop_helper.py <<'PY'
+          import pathlib, re
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          before = len(s)
+
+          # The rebuild helper was left behind when its call was removed, and it used a
+          # getter this version of the plugin does not have. Take the whole function out.
+          s = re.sub(
+              r'\n  /// ML Kit cuts Devanagari words.*?\n  static String _joinSymbols\(RecognizedText t\) \{.*?\n  \}\n',
+              '\n', s, flags=re.S)
+
+          if 'return _joinSymbols(t);' in s:
+              s = s.replace('return _joinSymbols(t);', 'return t.text;')
+
+          ex.write_text(s)
+          print('removed', before - len(s), 'bytes; _joinSymbols left:', '_joinSymbols' in s)
+          PY
+          python3 /tmp/patch_drop_helper.py
+
       - name: Fetch packages
         run: flutter pub get
 
