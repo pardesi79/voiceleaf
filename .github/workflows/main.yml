@@ -2535,11 +2535,11 @@ jobs:
           changed = []
           notes = []
 
-          # ---------- 1. the PDF library InstaReader carries, actually added this time
-          cands = sorted(glob.glob('android/app/build.gradle*')) + sorted(glob.glob('android/**/build.gradle*', recursive=True))
-          cands = [c for c in cands if 'app' in c and 'settings' not in c]
+          # ---------- 1. the PDF library InstaReader carries
+          cands = [c for c in sorted(glob.glob('android/**/build.gradle*', recursive=True))
+                   if 'app' in c and 'settings' not in c and 'plugin' not in c]
           if not cands:
-              notes.append('NO GRADLE FILE at ' + str([str(p) for p in pathlib.Path('android').rglob('build.gradle*')]))
+              notes.append('NO GRADLE FILE')
           else:
               g = pathlib.Path(cands[0])
               s = g.read_text()
@@ -2554,9 +2554,9 @@ jobs:
                   g.write_text(s)
                   changed.append('gradle ' + g.name)
               else:
-                  notes.append('pdfbox already in ' + g.name)
+                  notes.append('pdfbox already present')
 
-          # ---------- 2. the bridge that reads one page with it
+          # ---------- 2. the bridge, only if it is not there yet
           kt = None
           for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
               kt = p
@@ -2593,19 +2593,20 @@ jobs:
                   )
                   marker = 'super.configureFlutterEngine(flutterEngine)'
                   if marker in t:
-                      t = t.replace(marker, marker + '\n' + channel, 1)
-                      kt.write_text(t)
+                      kt.write_text(t.replace(marker, marker + '\n' + channel, 1))
                       changed.append('MainActivity bridge')
                   else:
-                      notes.append('no configureFlutterEngine marker')
+                      notes.append('no configureFlutterEngine')
+              else:
+                  notes.append('bridge already present')
 
-          # ---------- 3. ask PdfBox first, but only trust it when it has no holes
+          # ---------- 3. the Dart side: keep whatever block is there, add the hole guard
           ex = pathlib.Path('lib/extractors.dart')
           s = ex.read_text()
+
           helper = '''  static const MethodChannel _pdfText = MethodChannel('voiceleaf/pdftext');
 
             /// Reads a page's own text with PdfBox, the library InstaReader carries.
-            /// Its words come out exactly as printed, spaces included.
             static Future<String> pdfTextOf(String path, int index) async {
               try {
                 final t = await _pdfText.invokeMethod<String>('page', {
@@ -2620,30 +2621,64 @@ jobs:
 
           '''
           anchor = "  /// Reads one image on the phone with Google ML Kit (offline)."
-          if 'pdfTextOf' not in s and anchor in s:
+          if '_pdfText = MethodChannel' not in s and anchor in s:
               s = s.replace(anchor, helper + anchor, 1)
-              changed.append('dart bridge')
+              changed.append('dart helper')
 
-          old = """        final w = page.width;
+          guard = "        if (layer.contains('\\u0000')) layer = '';\n"
+          call = "        var layer = await pdfTextOf(path, i - 1);\n"
+          if call in s:
+              # the block is already there: only make sure the hole guard sits right after it
+              if guard not in s:
+                  s = s.replace(call, call + guard, 1)
+                  changed.append('hole guard added')
+              else:
+                  notes.append('guard already present')
+          else:
+              old = """        final w = page.width;
                   final h = page.height;"""
-          new = """        // PdfBox reads the printed words with their own spaces. Some PDFs map
-                  // part of their letters to nothing, so only trust a text with no holes.
-                  var layer = await pdfTextOf(path, i - 1);
-                  if (layer.contains('\\u0000')) layer = '';
-                  if (layer.length > 40) {
+              new = (call + guard +
+                     """        if (layer.length > 40) {
                     pages.add(repairIndic(pageNumbers ? 'Page $i.\\n$layer' : layer));
                     onProgress(i - from + 1, total, layer.length);
                     continue;
                   }
-                  final w = page.width;
-                  final h = page.height;"""
-          if old in s and 'pdfTextOf(path, i - 1)' not in s:
-              s = s.replace(old, new, 1)
-              changed.append('dart: pdfbox first')
-          ex.write_text(s)
+          """ + old)
+              if old in s:
+                  s = s.replace(old, new, 1)
+                  changed.append('dart block added')
 
+          ex.write_text(s)
           print('CHANGED:', ', '.join(changed) if changed else 'nothing')
           print('NOTES:', '; '.join(notes) if notes else 'none')
+          print('layer declarations:', s.count('var layer = await pdfTextOf'))
+          PY
+          python3 /tmp/p.py
+
+      - name: Never take the page text from the PDF
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          before = s
+
+          # This PDF writes part of its own letters as "no character", so text taken out
+          # of it comes back with a hole where the vowel mark belongs. The picture of the
+          # page has no such fault, so never take the page text from pdfium.
+          s = re.sub(r'await\s+page\.loadText\(\)', "''", s)
+          s = re.sub(r'await\s+doc\.pages\[[^\]]*\]\.loadText\(\)', "''", s)
+          s = s.replace("""        var layer = '';
+                  try {
+                    final raw = '';
+                    layer = raw == null ? '' : _tidyLayer(raw);
+                  } catch (_) {}
+          """, """        var layer = '';
+          """)
+
+          ex.write_text(s)
+          print('loadText left:', s.count('loadText'), '| changed:', s != before)
           PY
           python3 /tmp/p.py
 
