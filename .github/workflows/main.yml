@@ -2170,42 +2170,39 @@ jobs:
           if kt:
               t = kt.read_text()
               if 'voiceleaf/pdftext' not in t:
-                  bridge = '''    override fun configureFlutterEngine(flutterEngine: io.flutter.embedding.engine.FlutterEngine) {
-                  super.configureFlutterEngine(flutterEngine)
-                  io.flutter.plugin.common.MethodChannel(
-                      flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/pdftext"
-                  ).setMethodCallHandler { call, result ->
-                      if (call.method != "page") {
-                          result.notImplemented()
-                          return@setMethodCallHandler
-                      }
-                      val path = call.argument<String>("path")
-                      val index = call.argument<Int>("index") ?: 0
-                      try {
-                          com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(applicationContext)
-                          val doc = com.tom_roush.pdfbox.pdmodel.PDDocument.load(java.io.File(path))
-                          try {
-                              val s = com.tom_roush.pdfbox.text.PDFTextStripper()
-                              s.startPage = index + 1
-                              s.endPage = index + 1
-                              result.success(s.getText(doc))
-                          } finally {
-                              doc.close()
-                          }
-                      } catch (e: Throwable) {
-                          result.success("")
-                      }
-                  }
-              }
-
-          '''
-                  marker = '    private fun queryName(uri: Uri): String? {'
+                  channel = (
+                      '        io.flutter.plugin.common.MethodChannel(\n'
+                      '            flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/pdftext"\n'
+                      '        ).setMethodCallHandler { call, result ->\n'
+                      '            if (call.method != "page") {\n'
+                      '                result.notImplemented()\n'
+                      '                return@setMethodCallHandler\n'
+                      '            }\n'
+                      '            val path = call.argument<String>("path")\n'
+                      '            val index = call.argument<Int>("index") ?: 0\n'
+                      '            try {\n'
+                      '                com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(applicationContext)\n'
+                      '                val doc = com.tom_roush.pdfbox.pdmodel.PDDocument.load(java.io.File(path))\n'
+                      '                try {\n'
+                      '                    val s = com.tom_roush.pdfbox.text.PDFTextStripper()\n'
+                      '                    s.startPage = index + 1\n'
+                      '                    s.endPage = index + 1\n'
+                      '                    result.success(s.getText(doc))\n'
+                      '                } finally {\n'
+                      '                    doc.close()\n'
+                      '                }\n'
+                      '            } catch (e: Throwable) {\n'
+                      '                result.success("")\n'
+                      '            }\n'
+                      '        }\n'
+                  )
+                  marker = 'super.configureFlutterEngine(flutterEngine)'
                   if marker in t:
-                      t = t.replace(marker, bridge + marker, 1)
+                      t = t.replace(marker, marker + '\n' + channel, 1)
+                      kt.write_text(t)
+                      changed.append('MainActivity: pdf bridge inside engine')
                   else:
-                      t = t.replace('\n}', '\n\n' + bridge + '}\n', 1)
-                  kt.write_text(t)
-                  changed.append('MainActivity: pdf bridge')
+                      changed.append('MainActivity: no engine override found')
 
           # ---------- 3. ask the bridge before falling back to OCR
           ex = pathlib.Path('lib/extractors.dart')
