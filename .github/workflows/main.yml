@@ -2181,7 +2181,7 @@ jobs:
                       '            val path = call.argument<String>("path")\n'
                       '            val index = call.argument<Int>("index") ?: 0\n'
                       '            try {\n'
-                      '                com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(applicationContext)\n'
+                      '                com.tom_roush.pdfbox.util.PDFBoxResourceLoader.init(applicationContext)\n'
                       '                val doc = com.tom_roush.pdfbox.pdmodel.PDDocument.load(java.io.File(path))\n'
                       '                try {\n'
                       '                    val s = com.tom_roush.pdfbox.text.PDFTextStripper()\n'
