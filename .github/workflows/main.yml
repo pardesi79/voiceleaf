@@ -2379,134 +2379,6 @@ jobs:
           PY
           python3 /tmp/p.py
 
-      - name: Add the PDF library InstaReader uses
-        run: |
-          cat > /tmp/p.py <<'PY'
-          import pathlib, glob
-
-          changed = []
-          notes = []
-
-          # ---------- 1. the PDF library InstaReader carries
-          cands = [c for c in sorted(glob.glob('android/**/build.gradle*', recursive=True))
-                   if 'app' in c and 'settings' not in c and 'plugin' not in c]
-          if not cands:
-              notes.append('NO GRADLE FILE')
-          else:
-              g = pathlib.Path(cands[0])
-              s = g.read_text()
-              if 'pdfbox' not in s:
-                  dep = ('    implementation("com.tom-roush:pdfbox-android:1.8.10.3")\n'
-                         if g.name.endswith('.kts') else
-                         "    implementation 'com.tom-roush:pdfbox-android:1.8.10.3'\n")
-                  if 'dependencies {' in s:
-                      s = s.replace('dependencies {', 'dependencies {\n' + dep, 1)
-                  else:
-                      s += '\ndependencies {\n' + dep + '}\n'
-                  g.write_text(s)
-                  changed.append('gradle ' + g.name)
-              else:
-                  notes.append('pdfbox already present')
-
-          # ---------- 2. the bridge, only if it is not there yet
-          kt = None
-          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
-              kt = p
-          if kt is None:
-              notes.append('NO MainActivity.kt')
-          else:
-              t = kt.read_text()
-              if 'voiceleaf/pdftext' not in t:
-                  channel = (
-                      '        io.flutter.plugin.common.MethodChannel(\n'
-                      '            flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/pdftext"\n'
-                      '        ).setMethodCallHandler { call, result ->\n'
-                      '            if (call.method != "page") {\n'
-                      '                result.notImplemented()\n'
-                      '                return@setMethodCallHandler\n'
-                      '            }\n'
-                      '            val path = call.argument<String>("path")\n'
-                      '            val index = call.argument<Int>("index") ?: 0\n'
-                      '            try {\n'
-                      '                com.tom_roush.pdfbox.util.PDFBoxResourceLoader.init(applicationContext)\n'
-                      '                val doc = com.tom_roush.pdfbox.pdmodel.PDDocument.load(java.io.File(path))\n'
-                      '                try {\n'
-                      '                    val s = com.tom_roush.pdfbox.text.PDFTextStripper()\n'
-                      '                    s.startPage = index + 1\n'
-                      '                    s.endPage = index + 1\n'
-                      '                    result.success(s.getText(doc))\n'
-                      '                } finally {\n'
-                      '                    doc.close()\n'
-                      '                }\n'
-                      '            } catch (e: Throwable) {\n'
-                      '                result.success("")\n'
-                      '            }\n'
-                      '        }\n'
-                  )
-                  marker = 'super.configureFlutterEngine(flutterEngine)'
-                  if marker in t:
-                      kt.write_text(t.replace(marker, marker + '\n' + channel, 1))
-                      changed.append('MainActivity bridge')
-                  else:
-                      notes.append('no configureFlutterEngine')
-              else:
-                  notes.append('bridge already present')
-
-          # ---------- 3. the Dart side: keep whatever block is there, add the hole guard
-          ex = pathlib.Path('lib/extractors.dart')
-          s = ex.read_text()
-
-          helper = '''  static const MethodChannel _pdfText = MethodChannel('voiceleaf/pdftext');
-
-            /// Reads a page's own text with PdfBox, the library InstaReader carries.
-            static Future<String> pdfTextOf(String path, int index) async {
-              try {
-                final t = await _pdfText.invokeMethod<String>('page', {
-                  'path': path,
-                  'index': index,
-                });
-                return (t ?? '').trim();
-              } catch (_) {
-                return '';
-              }
-            }
-
-          '''
-          anchor = "  /// Reads one image on the phone with Google ML Kit (offline)."
-          if '_pdfText = MethodChannel' not in s and anchor in s:
-              s = s.replace(anchor, helper + anchor, 1)
-              changed.append('dart helper')
-
-          guard = "        if (layer.contains('\\u0000')) layer = '';\n"
-          call = "        var layer = await pdfTextOf(path, i - 1);\n"
-          if call in s:
-              # the block is already there: only make sure the hole guard sits right after it
-              if guard not in s:
-                  s = s.replace(call, call + guard, 1)
-                  changed.append('hole guard added')
-              else:
-                  notes.append('guard already present')
-          else:
-              old = """        final w = page.width;
-                  final h = page.height;"""
-              new = (call + guard +
-                     """        if (layer.length > 40) {
-                    pages.add(repairIndic(pageNumbers ? 'Page $i.\\n$layer' : layer));
-                    onProgress(i - from + 1, total, layer.length);
-                    continue;
-                  }
-          """ + old)
-              if old in s:
-                  s = s.replace(old, new, 1)
-                  changed.append('dart block added')
-
-          ex.write_text(s)
-          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
-          print('NOTES:', '; '.join(notes) if notes else 'none')
-          print('layer declarations:', s.count('var layer = await pdfTextOf'))
-          PY
-          python3 /tmp/p.py
-
       - name: Never take the page text from the PDF
         run: |
           cat > /tmp/p.py <<'PY'
@@ -2531,6 +2403,27 @@ jobs:
 
           ex.write_text(s)
           print('loadText left:', s.count('loadText'), '| changed:', s != before)
+          PY
+          python3 /tmp/p.py
+
+      - name: One page stays one page
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          before = s
+
+          # One page of the document must be one page of the book. Cutting a long page
+          # into 1800-character pieces turned a six page file into twelve.
+          s = re.sub(
+              r"pages\.addAll\(paginate\(pageNumbers \? 'Page \$i\.\\n\$text' : text\)\);",
+              "pages.add(repairIndic(pageNumbers ? 'Page $i.\\\\n$text' : text).trim());",
+              s)
+
+          ex.write_text(s)
+          print('changed:', s != before, '| addAll left:', s.count('pages.addAll(paginate(pageNumbers'))
           PY
           python3 /tmp/p.py
 
@@ -2756,6 +2649,144 @@ jobs:
           print('patched:', ', '.join(changed) if changed else 'nothing')
           PY
           python3 /tmp/patch_mlkit2.py
+
+      - name: Keep one engine only and drop the extra models
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re, glob, shutil
+
+          changed, notes = [], []
+
+          # ---------- 1. the Paddle models and their engine are not used any more
+          p = pathlib.Path('pubspec.yaml')
+          s = p.read_text()
+          if '- assets/ocr/' in s:
+              s = s.replace('    - assets/ocr/\n', '')
+              p.write_text(s)
+              changed.append('pubspec: ocr models dropped')
+          if pathlib.Path('assets/ocr').exists():
+              shutil.rmtree('assets/ocr', ignore_errors=True)
+              changed.append('assets/ocr removed')
+
+          # ---------- 2. the app gradle no longer needs the ONNX runtime
+          for g in [c for c in sorted(glob.glob('android/**/build.gradle*', recursive=True))
+                    if 'app' in c and 'settings' not in c]:
+              gp = pathlib.Path(g)
+              t = gp.read_text()
+              kept = [l for l in t.split('\n') if 'onnxruntime' not in l]
+              if len(kept) != len(t.split('\n')):
+                  gp.write_text('\n'.join(kept))
+                  changed.append('gradle: onnx runtime dropped')
+              break
+
+          # ---------- 3. the Kotlin side stops calling it
+          for kt in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              t = kt.read_text()
+              # the smoke test that loads an ONNX model
+              t = re.sub(r'    private fun smokeTest\(\): String \{.*?\n    \}\n',
+                         '    private fun smokeTest(): String = "ML Kit only"\n', t, flags=re.S)
+              # the page reader that used the Paddle engine
+              t = re.sub(r'PaddleOcr\.readFile\([^)]*\)', '"failed"', t)
+              if 'ai.onnxruntime' in t:
+                  t = re.sub(r'.*ai\.onnxruntime[^\n]*\n', '', t)
+                  notes.append('onnx lines removed')
+              kt.write_text(t)
+              changed.append('MainActivity: paddle calls removed')
+              break
+
+          # ---------- 4. the Dart side reads every page with ML Kit
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          old = """    String paddle = '';
+              try {
+                final t = await _ocrChannel.invokeMethod<String>('ocrImage', {'path': f.path});
+                final clean = (t ?? '').trim();
+                if (!clean.startsWith('failed')) paddle = clean;
+              } catch (_) {}
+              // The new engine is still being tuned. When it comes back with very little
+              // text, ask ML Kit as well and keep whichever found more.
+              if (paddle.length >= 120) return paddle;
+              final ml = await ocrFile(f, mode);
+              return ml.trim().length > paddle.length ? ml : paddle;"""
+          new = """    // One engine only: Google ML Kit, the same one InstaReader reads with.
+              return await ocrFile(f, mode);"""
+          if old in s:
+              s = s.replace(old, new, 1)
+              changed.append('extractors: ML Kit only')
+          ex.write_text(s)
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          print('NOTES:', '; '.join(notes) if notes else 'none')
+          PY
+          python3 /tmp/p.py
+
+      - name: Take every model from Play Services
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, glob, re
+
+          changed, notes = [], []
+
+          cands = [c for c in sorted(glob.glob('android/**/build.gradle*', recursive=True))
+                   if 'app' in c and 'settings' not in c and 'plugin' not in c]
+          if not cands:
+              notes.append('NO GRADLE FILE')
+          else:
+              g = pathlib.Path(cands[0])
+              kts = g.name.endswith('.kts')
+              lines = g.read_text().split('\n')
+
+              # nothing may be packed inside: every model must come from Play Services
+              kept = [l for l in lines
+                      if 'com.google.mlkit:text-recognition' not in l
+                      and 'play-services-mlkit-text-recognition' not in l]
+              dropped = len(lines) - len(kept)
+
+              dep = ('    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.2")\n'
+                     '    implementation("com.google.android.gms:play-services-mlkit-text-recognition-devanagari:16.0.2")'
+                     if kts else
+                     "    implementation 'com.google.android.gms:play-services-mlkit-text-recognition:19.0.2'\n"
+                     "    implementation 'com.google.android.gms:play-services-mlkit-text-recognition-devanagari:16.0.2'")
+
+              text = '\n'.join(kept)
+              if 'play-services-mlkit-text-recognition' not in text:
+                  if 'dependencies {' in text:
+                      text = text.replace('dependencies {', 'dependencies {\n' + dep, 1)
+                  else:
+                      text += '\n\ndependencies {\n' + dep + '\n}'
+                  changed.append('play services added')
+              g.write_text(text)
+              if dropped:
+                  changed.append(f'bundled lines removed ({dropped})')
+
+          # the manifest asks Play Services to fetch the model on first use
+          mf = pathlib.Path('android/app/src/main/AndroidManifest.xml')
+          if mf.exists():
+              x = mf.read_text()
+              if 'com.google.mlkit.vision.DEPENDENCIES' not in x:
+                  if '<application' in x:
+                      x = re.sub(r'(<application[^>]*>)',
+                                 r'\1\n        <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="ocr" />',
+                                 x, count=1)
+                      mf.write_text(x)
+                      changed.append('manifest asks Play Services')
+              else:
+                  notes.append('manifest already set')
+          else:
+              notes.append('no manifest')
+
+          # the app must not ship any model files of its own
+          for folder in ('assets/ocr',):
+              p = pathlib.Path(folder)
+              if p.exists():
+                  import shutil
+                  shutil.rmtree(p, ignore_errors=True)
+                  changed.append('assets/ocr removed')
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          print('NOTES:', '; '.join(notes) if notes else 'none')
+          PY
+          python3 /tmp/p.py
 
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
