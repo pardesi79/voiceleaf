@@ -2248,6 +2248,124 @@ jobs:
           PY
           python3 /tmp/patch_pdfbox.py
 
+      - name: Read the page by eye, not from the PDF text
+        run: |
+          cat > /tmp/patch_skip_pdfbox.py <<'PY'
+          import pathlib
+
+          changed = []
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # The picture of this page is sharp and the engine reads every letter of it
+          # correctly. What went wrong was taking the text out of the PDF instead, which
+          # loses letters. So read the page with the engine and keep the PDF text only
+          # as a last resort when the engine finds nothing.
+          old = """        var layer = await pdfTextOf(path, i - 1);
+                  if (layer.contains('\\u0000')) layer = '';
+                  if (layer.length > 40) {
+                    pages.add(repairIndic(pageNumbers ? 'Page $i.\\n$layer' : layer));
+                    onProgress(i - from + 1, total, layer.length);
+                    continue;
+                  }"""
+          new = """        var layer = '';
+                  try {
+                    final raw = await page.loadText();
+                    layer = raw == null ? '' : _tidyLayer(raw);
+                  } catch (_) {}"""
+          if old in s:
+              s = s.replace(old, new, 1)
+              changed.append('extractors: read the page by eye again')
+
+          ex.write_text(s)
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_skip_pdfbox.py
+
+      - name: Join the letters back into words
+        run: |
+          cat > /tmp/patch_symbols.py <<'PY'
+          import pathlib
+
+          changed = []
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          helper = '''  /// ML Kit cuts Devanagari words at every vowel mark, so "आंतरिक" comes back
+            /// as "आंतरि क". Rebuilding the line from the single characters and their
+            /// own boxes puts a space only where there is a real gap.
+            static String _joinSymbols(RecognizedText t) {
+              final out = StringBuffer();
+              for (final b in t.blocks) {
+                for (final l in b.lines) {
+                  double? lastRight;
+                  double? height;
+                  for (final sym in l.symbols) {
+                    final r = sym.boundingBox;
+                    final h = (r.bottom - r.top).abs();
+                    if (lastRight != null && height != null) {
+                      if ((r.left - lastRight) > height * 0.32) out.write(' ');
+                    }
+                    out.write(sym.text);
+                    lastRight = r.right;
+                    height = h;
+                  }
+                  out.write('\\n');
+                }
+                out.write('\\n');
+              }
+              final rebuilt = out.toString().trim();
+              return rebuilt.isEmpty ? t.text : rebuilt;
+            }
+
+          '''
+          anchor = "  /// Reads one image on the phone with Google ML Kit (offline)."
+          if '_joinSymbols' not in s and anchor in s:
+              s = s.replace(anchor, helper + anchor, 1)
+              changed.append('extractors: symbol rebuild')
+
+          if 'return t.text;' in s:
+              s = s.replace('return t.text;', 'return _joinSymbols(t);', 1)
+              changed.append('extractors: use symbol rebuild')
+
+          ex.write_text(s)
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_symbols.py
+
+      - name: Take ML Kit's own text again
+        run: |
+          cat > /tmp/patch_plain_text.py <<'PY'
+          import pathlib
+
+          changed = []
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # The build that read Hindi correctly took ML Kit's own text, straight. Later
+          # builds rebuilt it from the single characters and put spaces in the wrong
+          # places. Go back to the one line that worked.
+          if 'return _joinSymbols(t);' in s:
+              s = s.replace('return _joinSymbols(t);', 'return t.text;')
+              changed.append('plain ML Kit text')
+
+          # Reading the PDF's own text loses letters on this file, so read the page by eye.
+          old_block = """        var layer = await pdfTextOf(path, i - 1);
+                  if (layer.contains('\\u0000')) layer = '';
+                  if (layer.length > 40) {
+                    pages.add(repairIndic(pageNumbers ? 'Page $i.\\n$layer' : layer));
+                    onProgress(i - from + 1, total, layer.length);
+                    continue;
+                  }"""
+          if old_block in s:
+              s = s.replace(old_block, '', 1)
+              changed.append('skip the PDF text path')
+
+          ex.write_text(s)
+          print('patched:', ', '.join(changed) if changed else 'nothing to change')
+          PY
+          python3 /tmp/patch_plain_text.py
+
       - name: Fetch packages
         run: flutter pub get
 
