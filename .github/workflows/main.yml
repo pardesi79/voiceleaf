@@ -2003,6 +2003,52 @@ jobs:
           PY
           python3 /tmp/patch_prep.py
 
+      - name: Shrink pages the native way
+        run: |
+          cat > /tmp/patch_compress.py <<'PY'
+          import pathlib
+
+          changed = []
+          p = pathlib.Path('pubspec.yaml')
+          s = p.read_text()
+          if 'flutter_image_compress' not in s:
+              s = s.replace('  image: ^4.2.0', '  flutter_image_compress: ^2.3.0', 1)
+              if 'flutter_image_compress' not in s:
+                  s = s.replace('  http: ^1.2.2', '  http: ^1.2.2\n  flutter_image_compress: ^2.3.0', 1)
+              p.write_text(s)
+              changed.append('pubspec: native compressor')
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          s = s.replace("import 'package:image/image.dart' as im;",
+                        "import 'package:flutter_image_compress/flutter_image_compress.dart';", 1)
+
+          start = s.index('  static Future<Uint8List> _preparePage(Uint8List png) async {')
+          end = s.index('\n  }\n', start) + len('\n  }\n')
+          new = '''  /// Shrinks a page the way a phone does it natively: quick, and at a size
+            /// ML Kit reads well. 1600 pixels wide keeps a letter around 24-30 pixels.
+            static Future<Uint8List> _preparePage(Uint8List png) async {
+              try {
+                final out = await FlutterImageCompress.compressWithList(
+                  png,
+                  minWidth: 1600,
+                  minHeight: 1600,
+                  quality: 90,
+                  format: CompressFormat.jpeg,
+                );
+                return out.isEmpty ? png : out;
+              } catch (_) {
+                return png;
+              }
+            }
+          '''
+          s = s[:start] + new + s[end:]
+          changed.append('extractors: native page shrink')
+          ex.write_text(s)
+          print('patched:', ', '.join(changed))
+          PY
+          python3 /tmp/patch_compress.py
+
       - name: Fetch packages
         run: flutter pub get
 
