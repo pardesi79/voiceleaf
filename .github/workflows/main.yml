@@ -1742,7 +1742,9 @@ jobs:
             // a word split across lines: "पुस्त-" then "क"
             t = t.replaceAll(RegExp(r'[-\\u2010\\u2011]\\s*\\n\\s*'), '');
             // a vowel mark or virama that lost its letter: "पु स्तक" -> "पुस्तक"
-            t = t.replaceAll(RegExp(r'([\\u0900-\\u097F])\\s+([\\u093E-\\u094D\\u0900-\\u0903])'), r'$1$2');
+            t = t.replaceAllMapped(
+                RegExp(r'([\\u0900-\\u097F])\\s+([\\u093E-\\u094D\\u0902\\u0903])'),
+                (m) => '${m[1]}${m[2]}');
             // a bar instead of the Hindi full stop
             t = t.replaceAll(RegExp(r'\\|\\|\\|'), '\\u0965');
             t = t.replaceAll(RegExp(r'\\|'), '\\u0964');
