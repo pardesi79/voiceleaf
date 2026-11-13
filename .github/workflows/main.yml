@@ -1563,38 +1563,31 @@ jobs:
 
           # 1. a helper that rebuilds readable lines from the raw characters
           anchor = "  /// Turns one rendered page into PNG bytes, which both engines understand."
-          helper = '''  /// Rebuilds readable lines from a PDF's raw text. The characters come out in
-            /// drawing order, so joining them as they are breaks words apart. Putting
-            /// them back by their own position keeps the words whole.
+          helper = '''  /// Puts the broken lines back together, keeping the characters in the order
+            /// the PDF gives them. Reordering by position breaks Devanagari, because a
+            /// matra has to stay with its letter.
             static String _tidyLayer(PdfPageRawText t) {
-              final text = t.fullText;
-              final rects = t.charRects;
-              final runes = text.runes.toList();
-              if (rects.isEmpty || rects.length != runes.length) {
-                return text.replaceAll(RegExp(r'[ \\t]+'), ' ').trim();
-              }
-              final order = List<int>.generate(rects.length, (i) => i);
-              order.sort((a, b) {
-                final dy = rects[a].top - rects[b].top;
-                if (dy.abs() > 2.5) return dy > 0 ? -1 : 1;
-                return rects[a].left.compareTo(rects[b].left);
-              });
-              final sb = StringBuffer();
-              double? lastTop;
-              double? lastRight;
-              for (final i in order) {
-                final r = rects[i];
-                final h = (r.top - r.bottom).abs();
-                if (lastTop != null && (r.top - lastTop).abs() > 2.5) {
-                  sb.write('\\n');
-                } else if (lastRight != null && (r.left - lastRight) > h * 0.28) {
-                  sb.write(' ');
+              final lines = t.fullText.split('\\n');
+              final out = <String>[];
+              var buf = StringBuffer();
+              for (final line in lines) {
+                final s = line.trim();
+                if (s.isEmpty) {
+                  if (buf.isNotEmpty) {
+                    out.add(buf.toString());
+                    buf = StringBuffer();
+                  }
+                  continue;
                 }
-                sb.writeCharCode(runes[i]);
-                lastTop = r.top;
-                lastRight = r.right;
+                if (buf.isNotEmpty) buf.write(' ');
+                buf.write(s);
+                if (RegExp(r'[.!?\\u0964]["\\u201D\\u2019]?$').hasMatch(s)) {
+                  out.add(buf.toString());
+                  buf = StringBuffer();
+                }
               }
-              return sb.toString().replaceAll(RegExp(r'[ \\t]{2,}'), ' ').trim();
+              if (buf.isNotEmpty) out.add(buf.toString());
+              return out.join('\\n');
             }
 
           '''
@@ -1620,6 +1613,134 @@ jobs:
           print('patched:', ', '.join(changed) if changed else 'nothing')
           PY
           python3 /tmp/patch_tidypdf.py
+
+      - name: Make the reading flow like a book
+        run: |
+          cat > /tmp/patch_flow.py <<'PY'
+          import pathlib
+
+          changed = []
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          start = s.index('List<String> paginate(String raw, {int maxLen = 1800}) {')
+          end = s.index('\n}', s.index('  return pages;', start)) + len('\n}')
+
+          new = '''List<String> paginate(String raw, {int maxLen = 1800}) {
+            final text = raw
+                .replaceAll('\\r', '')
+                .replaceAll(RegExp(r'[ \\t]+'), ' ')
+                .trim();
+            if (text.isEmpty) return [];
+            // Put the broken lines back into flowing sentences. Only a real sentence end
+            // starts a new piece, so the reading voice does not stop after every line.
+            final pieces = <String>[];
+            var buf = StringBuffer();
+            for (final line in text.split('\\n')) {
+              final t = line.trim();
+              if (t.isEmpty) {
+                if (buf.isNotEmpty) {
+                  pieces.add(buf.toString());
+                  buf = StringBuffer();
+                }
+                continue;
+              }
+              if (buf.isNotEmpty) buf.write(' ');
+              buf.write(t);
+              if (RegExp(r'[.!?\\u0964]["\\u201D\\u2019]?$').hasMatch(t)) {
+                pieces.add(buf.toString());
+                buf = StringBuffer();
+              }
+            }
+            if (buf.isNotEmpty) pieces.add(buf.toString());
+
+            final pages = <String>[];
+            var out = StringBuffer();
+            for (var p in pieces) {
+              while (p.length > maxLen) {
+                var cut = p.lastIndexOf(RegExp(r'[.!?\\u0964]\\s'), maxLen);
+                if (cut <= 0) cut = p.lastIndexOf(' ', maxLen);
+                cut = cut <= 0 ? maxLen : cut + 1;
+                final head = p.substring(0, cut).trim();
+                if (head.isNotEmpty) {
+                  if (out.length > 0) {
+                    pages.add(out.toString().trim());
+                    out = StringBuffer();
+                  }
+                  pages.add(head);
+                }
+                p = p.substring(cut).trim();
+              }
+              if (p.isEmpty) continue;
+              if (out.length > 0 && out.length + p.length > maxLen) {
+                pages.add(out.toString().trim());
+                out = StringBuffer();
+              }
+              out.writeln(p);
+            }
+            if (out.length > 0) pages.add(out.toString().trim());
+            return pages;
+          }'''
+
+          s = s[:start] + new + s[end:]
+          ex.write_text(s)
+          changed.append('extractors: flowing text')
+          print('patched:', ', '.join(changed))
+          PY
+          python3 /tmp/patch_flow.py
+
+      - name: Pause must really pause
+        run: |
+          cat > /tmp/patch_fixes.py <<'PY'
+          import pathlib
+
+          changed = []
+          pp = pathlib.Path('lib/player_page.dart')
+          p = pp.read_text()
+
+          # 1. pause must really stop the voice
+          old_pause = """  Future<void> _pause() async {
+              setState(() => playing = false);
+              await tts.stop();
+              _save();
+            }"""
+          new_pause = """  Future<void> _pause() async {
+              setState(() => playing = false);
+              // Some engines ignore the first stop, so ask twice with a small gap.
+              try {
+                await tts.stop();
+                await Future<void>.delayed(const Duration(milliseconds: 120));
+                await tts.stop();
+              } catch (_) {}
+              _save();
+            }"""
+          if old_pause in p:
+              p = p.replace(old_pause, new_pause, 1)
+              changed.append('player: pause really stops')
+
+          # 2. a finished sentence must not restart reading after a pause
+          if 'ttsRunning' not in p:
+              old_done = """  void _onDone() {
+              if (!playing || !mounted) return;"""
+              new_done = """  void _onDone() {
+              if (!playing || !mounted || !ttsRunning) return;"""
+              if old_done in p:
+                  p = p.replace(old_done, new_done, 1)
+                  p = p.replace('  bool playing = false;',
+                                '  bool playing = false;\n  bool ttsRunning = false;', 1)
+                  p = p.replace('    await tts.speak(text.substring(start));',
+                                '    ttsRunning = true;\n    await tts.speak(text.substring(start));', 1)
+                  p = p.replace("""  Future<void> _pause() async {
+              setState(() => playing = false);""",
+                                """  Future<void> _pause() async {
+              setState(() => playing = false);
+              ttsRunning = false;""", 1)
+                  changed.append('player: stop flag')
+
+          pp.write_text(p)
+          print('patched:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/patch_fixes.py
 
       - name: Fetch packages
         run: flutter pub get
