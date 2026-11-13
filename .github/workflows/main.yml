@@ -2715,6 +2715,11 @@ jobs:
               changed.append('extractors: ML Kit only')
           ex.write_text(s)
 
+          # ---------- 5. the Kotlin file that used the ONNX engine must go as well
+          for kt in pathlib.Path('android/app/src/main').rglob('PaddleOcr.kt'):
+              kt.unlink()
+              changed.append('PaddleOcr.kt deleted')
+
           print('CHANGED:', ', '.join(changed) if changed else 'nothing')
           print('NOTES:', '; '.join(notes) if notes else 'none')
           PY
@@ -2785,6 +2790,43 @@ jobs:
 
           print('CHANGED:', ', '.join(changed) if changed else 'nothing')
           print('NOTES:', '; '.join(notes) if notes else 'none')
+          PY
+          python3 /tmp/p.py
+
+      - name: Keep the text exactly as it comes back
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          before = s
+
+          # InstaReader does not touch the text it gets back: the page becomes a picture,
+          # the picture goes to the recogniser, and the words are kept as they arrive.
+          # Nothing is joined, split, re-spaced or "repaired".
+
+          # 1. the page of a PDF is stored exactly as it came back
+          s = re.sub(
+              r"pages\.add\(repairIndic\(pageNumbers \? 'Page \$i\.\\n\$text' : text\)\.trim\(\)\);",
+              "pages.add(pageNumbers ? 'Page $i.\\n${text.trim()}' : text.trim());",
+              s)
+
+          # 2. the image reader keeps its text as it came back too
+          s = s.replace("""  final text = repairIndic(raw
+                .replaceAll('\\r', '')
+                .replaceAll(RegExp(r'[ \\t]+'), ' '))
+                .trim();""",
+          """  final text = raw
+                .replaceAll('\\r', '')
+                .trim();""")
+
+          # 3. and no other call may repair it
+          s = s.replace("pages.addAll(paginate(await ocrFile(File(paths[i]), mode)));",
+                        "pages.addAll(paginate(await ocrFile(File(paths[i]), mode)));")
+
+          ex.write_text(s)
+          print('repairIndic calls left:', s.count('repairIndic(') - 1, '| changed:', s != before)
           PY
           python3 /tmp/p.py
 
