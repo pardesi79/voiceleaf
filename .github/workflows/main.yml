@@ -2152,13 +2152,16 @@ jobs:
               raise SystemExit(1)
           s = g.read_text()
           if 'pdfbox' not in s:
-              dep = "    implementation 'com.tom-roush:pdfbox-android:2.0.27.0'\n"
+              if g.name.endswith('.kts'):
+                  dep = '    implementation("com.tom-roush:pdfbox-android:2.0.27.0")\n'
+              else:
+                  dep = "    implementation 'com.tom-roush:pdfbox-android:2.0.27.0'\n"
               if 'dependencies {' in s:
                   s = s.replace('dependencies {', 'dependencies {\n' + dep, 1)
               else:
                   s += '\ndependencies {\n' + dep + '}\n'
               g.write_text(s)
-              changed.append('gradle: pdfbox')
+              changed.append('gradle: pdfbox ' + ('kts' if g.name.endswith('.kts') else 'groovy'))
 
           # ---------- 2. a small bridge that reads one page of a PDF
           kt = None
