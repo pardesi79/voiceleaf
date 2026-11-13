@@ -2049,6 +2049,55 @@ jobs:
           PY
           python3 /tmp/patch_compress.py
 
+      - name: Make the ink darker and the paper whiter
+        run: |
+          cat > /tmp/patch_contrast.py <<'PY'
+          import pathlib
+
+          changed = []
+          p = pathlib.Path('pubspec.yaml')
+          s = p.read_text()
+          if 'image:' not in s:
+              s = s.replace('  flutter_image_compress: ^2.3.0', '  flutter_image_compress: ^2.3.0\n  image: ^4.2.0', 1)
+              p.write_text(s)
+              changed.append('pubspec: image back for contrast')
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          if "package:image/image.dart" not in s:
+              s = s.replace("import 'package:flutter_image_compress/flutter_image_compress.dart';",
+                            "import 'package:flutter_image_compress/flutter_image_compress.dart';\nimport 'package:image/image.dart' as im;", 1)
+
+          start = s.index('  static Future<Uint8List> _preparePage(Uint8List png) async {')
+          end = s.index('\n  }\n', start) + len('\n  }\n')
+          new = '''  /// Makes the page easier to read: grey, with the ink darker and the paper
+            /// whiter. A test of scanned pages found that contrast decided whether text
+            /// was recognised at all, while more pixels changed nothing.
+            static Future<Uint8List> _preparePage(Uint8List png) async {
+              try {
+                final src = im.decodeImage(png);
+                if (src == null) return png;
+                var out = im.grayscale(src);
+                out = im.adjustColor(out, contrast: 1.35, saturation: 1);
+                const wide = 1600;
+                if (out.width > wide) {
+                  final h = (out.height * wide / out.width).round();
+                  out = im.copyResize(out,
+                      width: wide, height: h, interpolation: im.Interpolation.average);
+                }
+                return Uint8List.fromList(im.encodePng(out, level: 1));
+              } catch (_) {
+                return png;
+              }
+            }
+          '''
+          s = s[:start] + new + s[end:]
+          changed.append('extractors: grey plus contrast')
+          ex.write_text(s)
+          print('patched:', ', '.join(changed))
+          PY
+          python3 /tmp/patch_contrast.py
+
       - name: Fetch packages
         run: flutter pub get
 
