@@ -3498,6 +3498,117 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Make Mobile Vision say what it really did
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          kt = None
+          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              kt = p
+          t = kt.read_text()
+          changed = []
+
+          # 1. the picture is far bigger than Mobile Vision likes; bring it down first
+          old = """                val bitmap = android.graphics.BitmapFactory.decodeFile(path)
+                          if (bitmap == null) {
+                              result.success("")
+                              return@setMethodCallHandler
+                          }"""
+          new = """                val decoded = android.graphics.BitmapFactory.decodeFile(path)
+                          if (decoded == null) {
+                              result.success("NOBITMAP")
+                              return@setMethodCallHandler
+                          }
+                          // Mobile Vision is made for camera sized pictures. A whole page
+                          // at 2x is about two megapixels, far bigger, so it is shrunk.
+                          val widest = 1200
+                          val bitmap = if (decoded.width > widest) {
+                              val h = (decoded.height * widest.toDouble() / decoded.width).toInt()
+                              android.graphics.Bitmap.createScaledBitmap(decoded, widest, h, true)
+                          } else decoded"""
+          if old in t:
+              t = t.replace(old, new, 1)
+              changed.append('page shrunk for Mobile Vision')
+
+          # 2. never answer with an empty string: say what actually happened
+          old2 = """                    if (!detector.isOperational) {
+                                  result.success("")
+                                  return@setMethodCallHandler
+                              }"""
+          new2 = """                    if (!detector.isOperational) {
+                                  result.success("NOTREADY")
+                                  return@setMethodCallHandler
+                              }"""
+          if old2 in t:
+              t = t.replace(old2, new2, 1)
+              changed.append('not ready is reported')
+
+          # 3. the words may sit in the block itself when components come back empty
+          old3 = """                    val found = detector.detect(frame)
+                              val sb = StringBuilder()
+                              for (i in 0 until found.size()) {
+                                  val block = found.valueAt(i)
+                                      as? com.google.android.gms.vision.text.TextBlock
+                                      ?: continue
+                                  // TextBlock carries its words in components, not in
+                                  // lines, and each component holds the text in value.
+                                  for (part in block.components) {
+                                      val piece = part.value
+                                      if (piece != null && piece.isNotEmpty()) {
+                                          sb.append(piece).append(" ")
+                                      }
+                                  }
+                                  sb.append("\\n")
+                              }
+                              result.success(sb.toString())"""
+          new3 = """                    val found = detector.detect(frame)
+                              if (found.size() == 0) {
+                                  result.success("NOBLOCKS")
+                                  return@setMethodCallHandler
+                              }
+                              val sb = StringBuilder()
+                              for (i in 0 until found.size()) {
+                                  val block = found.valueAt(i)
+                                      as? com.google.android.gms.vision.text.TextBlock
+                                      ?: continue
+                                  val whole = block.value
+                                  if (whole != null && whole.isNotEmpty()) {
+                                      sb.append(whole).append("\\n")
+                                      continue
+                                  }
+                                  // when the block itself is blank, its parts may still
+                                  // carry the words
+                                  for (part in block.components) {
+                                      val piece = part.value
+                                      if (piece != null && piece.isNotEmpty()) {
+                                          sb.append(piece).append(" ")
+                                      }
+                                  }
+                                  sb.append("\\n")
+                              }
+                              val out = sb.toString().trim()
+                              result.success(if (out.isEmpty()) "EMPTYBLOCKS" else out)"""
+          if old3 in t:
+              t = t.replace(old3, new3, 1)
+              changed.append('block text used first, then parts')
+
+          # 4. a failure must say so
+          old4 = """                } catch (e: Throwable) {
+                              result.success("")
+                          } finally {"""
+          new4 = """                } catch (e: Throwable) {
+                              result.success("ERR " + e.javaClass.simpleName + ": " + e.message)
+                          } finally {"""
+          if old4 in t:
+              t = t.replace(old4, new4, 1)
+              changed.append('errors reported')
+
+          kt.write_text(t)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
