@@ -1,5 +1,5 @@
 # Voiceleaf build v59
-# build 107
+# build 108
 name: Build Voiceleaf APK
 
 on:
@@ -3250,6 +3250,76 @@ jobs:
 
           ex.write_text(s)
           print('vision helper:', '_visionText' in s, '| compare added:', '_brokenMarks(vm)' in s, '| changed:', s != before)
+          PY
+          python3 /tmp/p.py
+
+      - name: Let Mobile Vision read Hindi on its own
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          before = s
+
+          # Hindi pages are read by Mobile Vision alone. Everything else stays on ML Kit.
+          old = """    final ml = await ocrFile(f, mode);
+              if (mode != 'auto' && mode != 'devanagari') return ml;
+              if (ml.trim().isEmpty) return ml;
+              // A second opinion on Hindi pages. It is only allowed to win when it
+              // actually found the page: a short or empty answer breaks almost no rules
+              // simply because it has nothing to break, so length is checked first.
+              final vm = await _visionText(f);
+              if (vm.length < (ml.length * 0.75).round()) return ml;
+              return _brokenMarks(vm) < _brokenMarks(ml) ? vm : ml;"""
+
+          new = """    final ml = await ocrFile(f, mode);
+              if (mode != 'auto' && mode != 'devanagari') return ml;
+              // Hindi is read by the older Google engine, which handles the joined
+              // letters better. ML Kit still reads it first, and its answer is used
+              // whenever the other engine has nothing to say.
+              final vm = await _visionText(f);
+              if (vm.trim().isEmpty) return ml;
+              return vm;"""
+
+          if old in s:
+              s = s.replace(old, new, 1)
+
+          ex.write_text(s)
+          print('hindi -> vision only:', 'return vm;' in s, '| changed:', s != before)
+          PY
+          python3 /tmp/p.py
+
+      - name: Make the Test OCR button tell the truth
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+          kt = None
+          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              kt = p
+          t = kt.read_text()
+          old = '"status" -> result.success("ML Kit only")'
+          new = '''"status" -> {
+                                  val ready = try {
+                                      val probe = com.google.android.gms.vision.text.TextRecognizer
+                                          .Builder(applicationContext).build()
+                                      val ok = probe.isOperational
+                                      probe.release()
+                                      ok
+                                  } catch (e: Throwable) {
+                                      false
+                                  }
+                                  result.success(
+                                      if (ready) "ML Kit + Mobile Vision ready"
+                                      else "ML Kit only - Mobile Vision model not downloaded"
+                                  )
+                              }'''
+          if old in t:
+              t = t.replace(old, new, 1)
+              kt.write_text(t)
+              print('status is now real:', True)
+          else:
+              print('status pattern not found')
           PY
           python3 /tmp/p.py
 
