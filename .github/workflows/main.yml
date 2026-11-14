@@ -3885,6 +3885,44 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Take the PDF text reader out so pages can be drawn again
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # The PDF text reader keeps taking the document for itself and the page can no
+          # longer be drawn afterwards, which leaves the book empty. It goes out until a
+          # reader is found that leaves the file alone.
+          old = """    // The words stored inside the PDF are exact; reading the picture is not.
+              final layer = await _fromTextLayer(path, from, to);
+              if (layer.length == to - from + 1 &&
+                  layer.every((p) => p.length > 40 && !p.contains('\\u0000'))) {
+                final out = <String>[];
+                for (var i = 0; i < layer.length; i++) {
+                  onProgress(i + 1, layer.length, layer[i].length);
+                  final n = from + i;
+                  out.add(pageNumbers ? 'Page $n.\\n${layer[i]}' : layer[i]);
+                }
+                return out;
+              }
+
+          """
+          if old in s:
+              s = s.replace(old, '', 1)
+              print('text layer call removed: True')
+          else:
+              # the guard may still be the earlier shape
+              import re
+              s2 = re.sub(r"    // The words stored inside the PDF are exact.*?return out;\n    \}\n\n", '', s, flags=re.S)
+              print('text layer call removed (loose):', s2 != s)
+              s = s2
+          ex.write_text(s)
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
