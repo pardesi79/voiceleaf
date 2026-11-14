@@ -3904,12 +3904,13 @@ jobs:
           ex = pathlib.Path('lib/extractors.dart')
           s = ex.read_text()
 
-          if 'pdf_graphics' not in s:
+          # both packages have a class named PdfDocument, so each is given a short name
+          if 'as pd;' not in s:
               s = s.replace("import 'package:flutter_pdf_text/flutter_pdf_text.dart';",
                             "import 'package:flutter_pdf_text/flutter_pdf_text.dart';\n"
-                            "import 'package:pdf_document/pdf_document.dart';\n"
-                            "import 'package:pdf_graphics/pdf_graphics.dart';", 1)
-              changed.append('imports added')
+                            "import 'package:pdf_document/pdf_document.dart' as pd;\n"
+                            "import 'package:pdf_graphics/pdf_graphics.dart' as pg;", 1)
+              changed.append('imports with short names')
 
           # ---------- 2. the reader itself now uses the Dart-only engine
           old = """  static Future<List<String>> _fromTextLayer(String path, int from, int to) async {
@@ -3931,12 +3932,12 @@ jobs:
             static Future<List<String>> _fromTextLayer(String path, int from, int to) async {
               try {
                 final bytes = await File(path).readAsBytes();
-                final doc = PdfDocument.open(bytes);
-                final total = doc.pages.length;
+                final doc = pd.PdfDocument.open(bytes);
+                final total = doc.pageCount;
                 final out = <String>[];
                 for (var i = from; i <= to; i++) {
                   if (i - 1 >= total) break;
-                  out.add(_foldMarks(PdfPageText.extract(doc, i - 1).text).trim());
+                  out.add(_foldMarks(pg.PdfTextExtractor.extract(doc, i - 1).text).trim());
                 }
                 return out;
               } catch (_) {
@@ -3949,6 +3950,40 @@ jobs:
 
           ex.write_text(s)
           print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Take the old Java PDF reader out of the build
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          # ---------- the Java PDF reader is no longer called anywhere: the Dart engine
+          # does that work now. Taking it out also takes about nine megabytes of PdfBox
+          # out of the phone build.
+          p = pathlib.Path('pubspec.yaml')
+          s = p.read_text()
+          before = s
+          s = '\n'.join(l for l in s.split('\n') if 'flutter_pdf_text' not in l)
+          if s != before:
+              p.write_text(s)
+              changed.append('pubspec: flutter_pdf_text removed')
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          before = s
+          s = '\n'.join(l for l in s.split('\n')
+                        if "package:flutter_pdf_text/flutter_pdf_text.dart" not in l)
+          if s != before:
+              ex.write_text(s)
+              changed.append('import removed')
+
+          # nothing may still call the old reader
+          left = ex.read_text().count('PDFDoc')
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          print('PDFDoc references left:', left)
           PY
           python3 /tmp/p.py
 
