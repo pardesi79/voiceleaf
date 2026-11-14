@@ -1,4 +1,5 @@
 # Voiceleaf build v59
+# text layer first, OCR only for scans (v2)
 # text layer first, OCR only for scans
 # build 110
 name: Build Voiceleaf APK
@@ -3620,24 +3621,24 @@ jobs:
           # ---------- 1. a package that reads the words already inside a PDF
           p = pathlib.Path('pubspec.yaml')
           s = p.read_text()
-          if 'pdf_text' not in s:
-              s = s.replace('  pdfx: ^2.9.2', '  pdfx: ^2.9.2\n  pdf_text: ^0.13.0', 1)
+          if 'flutter_pdf_text' not in s:
+              s = s.replace('  pdfx: ^2.9.2', '  pdfx: ^2.9.2\n  flutter_pdf_text: ^0.9.0', 1)
               p.write_text(s)
-              changed.append('pubspec: pdf_text')
+              changed.append('pubspec: flutter_pdf_text')
 
           ex = pathlib.Path('lib/extractors.dart')
           s = ex.read_text()
 
-          if 'pdf_text' not in s:
+          if 'flutter_pdf_text' not in s:
               s = s.replace("import 'package:pdfx/pdfx.dart';",
-                            "import 'package:pdf_text/pdf_text.dart';\nimport 'package:pdfx/pdfx.dart';", 1)
+                            "import 'package:flutter_pdf_text/flutter_pdf_text.dart';\nimport 'package:pdfx/pdfx.dart';", 1)
               changed.append('import added')
 
           # ---------- 2. a digital PDF already carries its words. Reading them is exact,
           # while reading the picture can never be. The only repair needed is the doubled
           # vowel mark this PDF family writes ("ज्ञाान" -> "ज्ञान").
           helper = '''
-            /// Folds a vowel mark that the PDF wrote twice into one.
+            /// Folds a vowel mark the PDF wrote twice into one.
             static String _foldMarks(String t) => t.replaceAllMapped(
                 RegExp(r'([\\u093E-\\u094D][\\u0902\\u0903]?)\\1+'), (m) => m[1]!);
 
