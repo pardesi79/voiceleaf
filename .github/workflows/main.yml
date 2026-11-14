@@ -3885,41 +3885,70 @@ jobs:
           PY
           python3 /tmp/p.py
 
-      - name: Take the PDF text reader out so pages can be drawn again
+      - name: Read the PDF words with an engine written in Dart
         run: |
           cat > /tmp/p.py <<'PY'
           import pathlib
 
+          changed = []
+
+          # ---------- 1. a PDF engine written entirely in Dart: no native code, so it
+          # cannot take the file away from the page renderer
+          p = pathlib.Path('pubspec.yaml')
+          s = p.read_text()
+          if 'pdf_graphics' not in s:
+              s = s.replace('  pdfx: ^2.9.2', '  pdfx: ^2.9.2\n  pdf_graphics: ^16.0.0\n  pdf_document: ^16.0.0', 1)
+              p.write_text(s)
+              changed.append('pubspec: pdf_graphics + pdf_document')
+
           ex = pathlib.Path('lib/extractors.dart')
           s = ex.read_text()
 
-          # The PDF text reader keeps taking the document for itself and the page can no
-          # longer be drawn afterwards, which leaves the book empty. It goes out until a
-          # reader is found that leaves the file alone.
-          old = """    // The words stored inside the PDF are exact; reading the picture is not.
-              final layer = await _fromTextLayer(path, from, to);
-              if (layer.length == to - from + 1 &&
-                  layer.every((p) => p.length > 40 && !p.contains('\\u0000'))) {
+          if 'pdf_graphics' not in s:
+              s = s.replace("import 'package:flutter_pdf_text/flutter_pdf_text.dart';",
+                            "import 'package:flutter_pdf_text/flutter_pdf_text.dart';\n"
+                            "import 'package:pdf_document/pdf_document.dart';\n"
+                            "import 'package:pdf_graphics/pdf_graphics.dart';", 1)
+              changed.append('imports added')
+
+          # ---------- 2. the reader itself now uses the Dart-only engine
+          old = """  static Future<List<String>> _fromTextLayer(String path, int from, int to) async {
+              try {
+                final doc = await PDFDoc.fromPath(path);
                 final out = <String>[];
-                for (var i = 0; i < layer.length; i++) {
-                  onProgress(i + 1, layer.length, layer[i].length);
-                  final n = from + i;
-                  out.add(pageNumbers ? 'Page $n.\\n${layer[i]}' : layer[i]);
+                for (var i = from; i <= to; i++) {
+                  if (i - 1 >= doc.length) break;
+                  final t = _foldMarks(await doc.pages[i - 1].text).trim();
+                  out.add(t);
                 }
                 return out;
+              } catch (_) {
+                return const [];
               }
-
-          """
+            }"""
+          new = """  /// Reads the words stored inside the PDF with an engine written in Dart.
+            /// No native code takes part, so the page can still be drawn afterwards.
+            static Future<List<String>> _fromTextLayer(String path, int from, int to) async {
+              try {
+                final bytes = await File(path).readAsBytes();
+                final doc = PdfDocument.open(bytes);
+                final total = doc.pages.length;
+                final out = <String>[];
+                for (var i = from; i <= to; i++) {
+                  if (i - 1 >= total) break;
+                  out.add(_foldMarks(PdfPageText.extract(doc, i - 1).text).trim());
+                }
+                return out;
+              } catch (_) {
+                return const [];
+              }
+            }"""
           if old in s:
-              s = s.replace(old, '', 1)
-              print('text layer call removed: True')
-          else:
-              # the guard may still be the earlier shape
-              import re
-              s2 = re.sub(r"    // The words stored inside the PDF are exact.*?return out;\n    \}\n\n", '', s, flags=re.S)
-              print('text layer call removed (loose):', s2 != s)
-              s = s2
+              s = s.replace(old, new, 1)
+              changed.append('reader uses the Dart engine')
+
           ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
           PY
           python3 /tmp/p.py
 
