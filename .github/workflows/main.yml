@@ -3402,6 +3402,58 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Make the engine test report both engines
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          # ---------- 1. the "check engine" button must report both engines, not a
+          # hardcoded line
+          kt = None
+          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              kt = p
+          t = kt.read_text()
+          old = '    private fun smokeTest(): String = "ML Kit only"'
+          new = '''    private fun smokeTest(): String {
+                  val vision = try {
+                      val probe = com.google.android.gms.vision.text.TextRecognizer
+                          .Builder(applicationContext).build()
+                      val ok = probe.isOperational
+                      probe.release()
+                      if (ok) "ready" else "model not downloaded"
+                  } catch (e: Throwable) {
+                      "not available"
+                  }
+                  return "ML Kit: ready | Mobile Vision: $vision"
+              }'''
+          if old in t:
+              t = t.replace(old, new, 1)
+              changed.append('smoke test tells the truth')
+          kt.write_text(t)
+
+          # ---------- 2. the test screen must show that answer next to the two pictures
+          pp = pathlib.Path('lib/preferences_page.dart')
+          s = pp.read_text()
+          old2 = """    if (!context.mounted) return;
+              await showDialog<void>("""
+          new2 = """    try {
+                const ch = MethodChannel('voiceleaf/ocr');
+                final engine = await ch.invokeMethod<String>('smoke');
+                if (engine != null && engine.isNotEmpty) out.add('Engines: $engine');
+              } catch (_) {}
+              if (!context.mounted) return;
+              await showDialog<void>("""
+          if old2 in s and 'Engines:' not in s:
+              s = s.replace(old2, new2, 1)
+              changed.append('test screen shows engine status')
+          pp.write_text(s)
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
