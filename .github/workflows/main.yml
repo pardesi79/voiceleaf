@@ -1,5 +1,5 @@
 # Voiceleaf build v59
-# build 108
+# build 110
 name: Build Voiceleaf APK
 
 on:
@@ -3320,6 +3320,64 @@ jobs:
               print('status is now real:', True)
           else:
               print('status pattern not found')
+          PY
+          python3 /tmp/p.py
+
+      - name: Never let a short reading win
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          old = """    final vm = await _visionText(f);
+              if (vm.trim().isEmpty) return ml;
+              return vm;"""
+          new = """    final vm = await _visionText(f);
+              // Only a real reading may win. A short answer is not an empty one, so the
+              // length is what gets checked, not just emptiness.
+              if (vm.length < (ml.length * 0.75).round()) return ml;
+              return vm;"""
+          if old in s:
+              s = s.replace(old, new, 1)
+              ex.write_text(s)
+              print('guard restored: True')
+          else:
+              print('guard restored: False (pattern not found)')
+          PY
+          python3 /tmp/p.py
+
+      - name: Wait for the older engine to finish downloading
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          kt = None
+          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              kt = p
+          t = kt.read_text()
+
+          old = """                    if (!detector.isOperational) {
+                                  result.success("")
+                                  return@setMethodCallHandler
+                              }"""
+          new = """                    // The OCR files arrive from Play Services on first use and
+                              // can take a while. Wait for them instead of giving up at once.
+                              var waited = 0
+                              while (!detector.isOperational && waited < 30000) {
+                                  Thread.sleep(500)
+                                  waited += 500
+                              }
+                              if (!detector.isOperational) {
+                                  result.success("")
+                                  return@setMethodCallHandler
+                              }"""
+          if old in t:
+              t = t.replace(old, new, 1)
+              kt.write_text(t)
+              print('wait loop added: True')
+          else:
+              print('wait loop added: False (pattern not found)')
           PY
           python3 /tmp/p.py
 
