@@ -1,4 +1,5 @@
 # Voiceleaf build v59
+# build 104
 name: Build Voiceleaf APK
 
 on:
@@ -3134,22 +3135,27 @@ jobs:
                               result.success("")
                               return@setMethodCallHandler
                           }
-                          var detector: com.google.android.gms.vision.text.TextRecognizer? = null
+                          val bitmap = android.graphics.BitmapFactory.decodeFile(path)
+                          if (bitmap == null) {
+                              result.success("")
+                              return@setMethodCallHandler
+                          }
+                          val detector = com.google.android.gms.vision.text.TextRecognizer
+                              .Builder(applicationContext).build()
                           try {
-                              val bitmap = android.graphics.BitmapFactory.decodeFile(path)
-                              detector = com.google.android.gms.vision.text.TextRecognizer
-                                  .Builder(applicationContext).build()
-                              if (!detector.isOperational || bitmap == null) {
+                              if (!detector.isOperational) {
                                   result.success("")
                                   return@setMethodCallHandler
                               }
                               val frame = com.google.android.gms.vision.Frame.Builder()
                                   .setBitmap(bitmap).build()
-                              val found = detector.detect(frame)
+                              val found: android.util.SparseArray<com.google.android.gms.vision.text.TextBlock> =
+                                  detector.detect(frame)
                               val sb = StringBuilder()
                               for (i in 0 until found.size()) {
                                   val block = found.valueAt(i)
-                                  for (line in block.lines) {
+                                  val lines = block.lines
+                                  for (line in lines) {
                                       sb.append(line.value).append("\\n")
                                   }
                               }
@@ -3157,7 +3163,7 @@ jobs:
                           } catch (e: Throwable) {
                               result.success("")
                           } finally {
-                              try { detector?.release() } catch (_: Throwable) {}
+                              try { detector.release() } catch (_: Throwable) {}
                           }
                       }
           '''
