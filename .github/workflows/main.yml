@@ -1,5 +1,5 @@
 # Voiceleaf build v59
-# build 106
+# build 107
 name: Build Voiceleaf APK
 
 on:
@@ -3238,10 +3238,12 @@ jobs:
               return await ocrFile(f, mode);"""
           new = """    final ml = await ocrFile(f, mode);
               if (mode != 'auto' && mode != 'devanagari') return ml;
-              // A second opinion on Hindi pages: whichever reading breaks fewer
-              // Devanagari rules wins.
+              if (ml.trim().isEmpty) return ml;
+              // A second opinion on Hindi pages. It is only allowed to win when it
+              // actually found the page: a short or empty answer breaks almost no rules
+              // simply because it has nothing to break, so length is checked first.
               final vm = await _visionText(f);
-              if (vm.isEmpty) return ml;
+              if (vm.length < (ml.length * 0.75).round()) return ml;
               return _brokenMarks(vm) < _brokenMarks(ml) ? vm : ml;"""
           if old in s:
               s = s.replace(old, new, 1)
