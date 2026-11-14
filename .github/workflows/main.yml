@@ -1,4 +1,5 @@
 # Voiceleaf build v59
+# text layer first, OCR only for scans
 # build 110
 name: Build Voiceleaf APK
 
@@ -3605,6 +3606,89 @@ jobs:
               changed.append('errors reported')
 
           kt.write_text(t)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Read the words the PDF already carries
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          # ---------- 1. a package that reads the words already inside a PDF
+          p = pathlib.Path('pubspec.yaml')
+          s = p.read_text()
+          if 'pdf_text' not in s:
+              s = s.replace('  pdfx: ^2.9.2', '  pdfx: ^2.9.2\n  pdf_text: ^0.13.0', 1)
+              p.write_text(s)
+              changed.append('pubspec: pdf_text')
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          if 'pdf_text' not in s:
+              s = s.replace("import 'package:pdfx/pdfx.dart';",
+                            "import 'package:pdf_text/pdf_text.dart';\nimport 'package:pdfx/pdfx.dart';", 1)
+              changed.append('import added')
+
+          # ---------- 2. a digital PDF already carries its words. Reading them is exact,
+          # while reading the picture can never be. The only repair needed is the doubled
+          # vowel mark this PDF family writes ("ज्ञाान" -> "ज्ञान").
+          helper = '''
+            /// Folds a vowel mark that the PDF wrote twice into one.
+            static String _foldMarks(String t) => t.replaceAllMapped(
+                RegExp(r'([\\u093E-\\u094D][\\u0902\\u0903]?)\\1+'), (m) => m[1]!);
+
+            /// Reads the words stored inside the PDF, page by page. An empty list means
+            /// the file is only a picture, and the caller should fall back to OCR.
+            static Future<List<String>> _fromTextLayer(String path, int from, int to) async {
+              try {
+                final doc = await PDFDoc.fromPath(path);
+                final out = <String>[];
+                for (var i = from; i <= to; i++) {
+                  if (i - 1 >= doc.length) break;
+                  final t = _foldMarks(await doc.pages[i - 1].text).trim();
+                  out.add(t);
+                }
+                return out;
+              } catch (_) {
+                return const [];
+              }
+            }
+
+          '''
+          anchor = "  /// Reads one image on the phone with Google ML Kit (offline)."
+          if '_fromTextLayer' not in s and anchor in s:
+              s = s.replace(anchor, helper + anchor, 1)
+              changed.append('text layer reader added')
+
+          # ---------- 3. use the layer first; draw the page only when it is empty
+          old = """    final doc = await PdfDocument.openFile(path);
+              final tmp = await getTemporaryDirectory();
+              final pages = <String>[];"""
+          new = """    // A digital PDF carries its own words; use them and skip OCR entirely.
+              final layer = await _fromTextLayer(path, from, to);
+              if (layer.length == to - from + 1 &&
+                  layer.every((p) => p.length > 40 && !p.contains('\\u0000'))) {
+                final out = <String>[];
+                for (var i = 0; i < layer.length; i++) {
+                  onProgress(i + 1, layer.length, layer[i].length);
+                  final n = from + i;
+                  out.add(pageNumbers ? 'Page $n.\\n${layer[i]}' : layer[i]);
+                }
+                return out;
+              }
+
+              final doc = await PdfDocument.openFile(path);
+              final tmp = await getTemporaryDirectory();
+              final pages = <String>[];"""
+          if old in s:
+              s = s.replace(old, new, 1)
+              changed.append('layer used before drawing')
+
+          ex.write_text(s)
           print('CHANGED:', ', '.join(changed) if changed else 'nothing')
           PY
           python3 /tmp/p.py
