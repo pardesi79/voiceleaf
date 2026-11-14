@@ -3381,6 +3381,77 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Settle the page size the way InstaReader does
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          # ---------- 1. the package InstaReader uses to settle the page size
+          p = pathlib.Path('pubspec.yaml')
+          s = p.read_text()
+          if 'flutter_image_compress' not in s:
+              s = s.replace('  pdfx: ^2.9.2', '  pdfx: ^2.9.2\n  flutter_image_compress: ^2.3.0', 1)
+              p.write_text(s)
+              changed.append('pubspec: flutter_image_compress')
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # ---------- 2. import it
+          if 'flutter_image_compress' not in s:
+              s = s.replace("import 'package:pdfx/pdfx.dart';",
+                            "import 'package:flutter_image_compress/flutter_image_compress.dart';\n"
+                            "import 'package:pdfx/pdfx.dart';", 1)
+              changed.append('import added')
+
+          # ---------- 3. a helper that settles the size the way the other reader does
+          helper = '''
+            /// Brings the page to at least 1920 x 1080 and saves it as a JPEG at
+            /// quality 95, which is what InstaReader does before it reads a page.
+            /// The joined strokes need that many pixels to stay apart.
+            static Future<Uint8List> _settleSize(Uint8List png, String tag) async {
+              try {
+                final dir = await getTemporaryDirectory();
+                final input = File('${dir.path}/raw_$tag.png');
+                await input.writeAsBytes(png);
+                final out = await FlutterImageCompress.compressWithFile(
+                  input.path,
+                  minWidth: 1920,
+                  minHeight: 1080,
+                  quality: 95,
+                  format: CompressFormat.jpeg,
+                );
+                await input.delete();
+                if (out == null || out.isEmpty) return png;
+                return Uint8List.fromList(out);
+              } catch (_) {
+                return png;
+              }
+            }
+
+          '''
+          anchor = "  /// Reads one image on the phone with Google ML Kit (offline)."
+          if '_settleSize' not in s and anchor in s:
+              s = s.replace(anchor, helper + anchor, 1)
+              changed.append('size helper added')
+
+          # ---------- 4. every rendered page goes through it
+          old = """        final f = File('${tmp.path}/pg_$i.png');
+                  await f.writeAsBytes(bytes);"""
+          new = """        final settled = await _settleSize(bytes, '$i');
+                  final f = File('${tmp.path}/pg_$i.jpg');
+                  await f.writeAsBytes(settled);"""
+          if old in s:
+              s = s.replace(old, new, 1)
+              changed.append('page size settled before reading')
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
