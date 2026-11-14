@@ -3462,6 +3462,42 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Let Mobile Vision read Hindi and nothing else
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          changed = []
+
+          # Hindi must be read by Mobile Vision alone. ML Kit must not even run, so the
+          # result is Mobile Vision's and nothing else. That is the only way to see
+          # whether it really reads Devanagari.
+          old = """    final ml = await ocrFile(f, mode);
+              if (mode != 'auto' && mode != 'devanagari') return ml;
+              // Hindi is read by the older Google engine, which handles the joined
+              // letters better. ML Kit still reads it first, and its answer is used
+              // whenever the other engine has nothing to say.
+              final vm = await _visionText(f);
+              // Only a real reading may win. A short answer is not an empty one, so the
+              // length is what gets checked, not just emptiness.
+              if (vm.length < (ml.length * 0.75).round()) return ml;
+              return vm;"""
+          new = """    if (mode == 'auto' || mode == 'devanagari') {
+                // Hindi is read by Mobile Vision and nothing else. ML Kit does not run
+                // here, so whatever comes back is Mobile Vision's own reading.
+                return await _visionText(f);
+              }
+              return await ocrFile(f, mode);"""
+          if old in s:
+              s = s.replace(old, new, 1)
+              changed.append('hindi reads with Mobile Vision alone')
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
