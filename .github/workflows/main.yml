@@ -2005,52 +2005,6 @@ jobs:
           PY
           python3 /tmp/patch_prep.py
 
-      - name: Shrink pages the native way
-        run: |
-          cat > /tmp/patch_compress.py <<'PY'
-          import pathlib
-
-          changed = []
-          p = pathlib.Path('pubspec.yaml')
-          s = p.read_text()
-          if 'flutter_image_compress' not in s:
-              s = s.replace('  image: ^4.2.0', '  flutter_image_compress: ^2.3.0', 1)
-              if 'flutter_image_compress' not in s:
-                  s = s.replace('  http: ^1.2.2', '  http: ^1.2.2\n  flutter_image_compress: ^2.3.0', 1)
-              p.write_text(s)
-              changed.append('pubspec: native compressor')
-
-          ex = pathlib.Path('lib/extractors.dart')
-          s = ex.read_text()
-          s = s.replace("import 'package:image/image.dart' as im;",
-                        "import 'package:flutter_image_compress/flutter_image_compress.dart';", 1)
-
-          start = s.index('  static Future<Uint8List> _preparePage(Uint8List png) async {')
-          end = s.index('\n  }\n', start) + len('\n  }\n')
-          new = '''  /// Shrinks a page the way a phone does it natively: quick, and at a size
-            /// ML Kit reads well. 1600 pixels wide keeps a letter around 24-30 pixels.
-            static Future<Uint8List> _preparePage(Uint8List png) async {
-              try {
-                final out = await FlutterImageCompress.compressWithList(
-                  png,
-                  minWidth: 1600,
-                  minHeight: 1600,
-                  quality: 90,
-                  format: CompressFormat.jpeg,
-                );
-                return out.isEmpty ? png : out;
-              } catch (_) {
-                return png;
-              }
-            }
-          '''
-          s = s[:start] + new + s[end:]
-          changed.append('extractors: native page shrink')
-          ex.write_text(s)
-          print('patched:', ', '.join(changed))
-          PY
-          python3 /tmp/patch_compress.py
-
       - name: Make the ink darker and the paper whiter
         run: |
           cat > /tmp/patch_contrast.py <<'PY'
@@ -3381,73 +3335,69 @@ jobs:
           PY
           python3 /tmp/p.py
 
-      - name: Settle the page size the way InstaReader does
+      - name: Read the page the way Saathi does, without freezing
         run: |
           cat > /tmp/p.py <<'PY'
           import pathlib
 
+          kt = None
+          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              kt = p
+          t = kt.read_text()
           changed = []
 
-          # ---------- 1. the package InstaReader uses to settle the page size
-          p = pathlib.Path('pubspec.yaml')
-          s = p.read_text()
-          if 'flutter_image_compress' not in s:
-              s = s.replace('  pdfx: ^2.9.2', '  pdfx: ^2.9.2\n  flutter_image_compress: ^2.3.0', 1)
-              p.write_text(s)
-              changed.append('pubspec: flutter_image_compress')
+          # ---------- 1. the 30 second freeze goes: it locked the screen and stopped the
+          # very download it was waiting for
+          old_wait = """                    // The OCR files arrive from Play Services on first use and
+                              // can take a while. Wait for them instead of giving up at once.
+                              var waited = 0
+                              while (!detector.isOperational && waited < 30000) {
+                                  Thread.sleep(500)
+                                  waited += 500
+                              }
+                              if (!detector.isOperational) {
+                                  result.success("")
+                                  return@setMethodCallHandler
+                              }"""
+          new_wait = """                    if (!detector.isOperational) {
+                                  result.success("")
+                                  return@setMethodCallHandler
+                              }"""
+          if old_wait in t:
+              t = t.replace(old_wait, new_wait, 1)
+              changed.append('freeze removed')
 
-          ex = pathlib.Path('lib/extractors.dart')
-          s = ex.read_text()
-
-          # ---------- 2. import it
-          if 'flutter_image_compress' not in s:
-              s = s.replace("import 'package:pdfx/pdfx.dart';",
-                            "import 'package:flutter_image_compress/flutter_image_compress.dart';\n"
-                            "import 'package:pdfx/pdfx.dart';", 1)
-              changed.append('import added')
-
-          # ---------- 3. a helper that settles the size the way the other reader does
-          helper = '''
-            /// Brings the page to at least 1920 x 1080 and saves it as a JPEG at
-            /// quality 95, which is what InstaReader does before it reads a page.
-            /// The joined strokes need that many pixels to stay apart.
-            static Future<Uint8List> _settleSize(Uint8List png, String tag) async {
-              try {
-                final dir = await getTemporaryDirectory();
-                final input = File('${dir.path}/raw_$tag.png');
-                await input.writeAsBytes(png);
-                final out = await FlutterImageCompress.compressWithFile(
-                  input.path,
-                  minWidth: 1920,
-                  minHeight: 1080,
-                  quality: 95,
-                  format: CompressFormat.jpeg,
-                );
-                await input.delete();
-                if (out == null || out.isEmpty) return png;
-                return Uint8List.fromList(out);
-              } catch (_) {
-                return png;
-              }
-            }
-
-          '''
-          anchor = "  /// Reads one image on the phone with Google ML Kit (offline)."
-          if '_settleSize' not in s and anchor in s:
-              s = s.replace(anchor, helper + anchor, 1)
-              changed.append('size helper added')
-
-          # ---------- 4. every rendered page goes through it
-          old = """        final f = File('${tmp.path}/pg_$i.png');
-                  await f.writeAsBytes(bytes);"""
-          new = """        final settled = await _settleSize(bytes, '$i');
-                  final f = File('${tmp.path}/pg_$i.jpg');
-                  await f.writeAsBytes(settled);"""
-          if old in s:
-              s = s.replace(old, new, 1)
-              changed.append('page size settled before reading')
-
-          ex.write_text(s)
+          # ---------- 2. read the page the way Saathi reads it: block -> components ->
+          # value. TextBlock has no getLines() and no getText(); getComponents() does.
+          old_read = """                    val found = detector.detect(frame)
+                              val sb = StringBuilder()
+                              for (i in 0 until found.size()) {
+                                  val block = found.valueAt(i)
+                                      as? com.google.android.gms.vision.text.TextBlock
+                                  if (block != null) sb.append(block.value).append("\\n")
+                              }
+                              result.success(sb.toString())"""
+          new_read = """                    val found = detector.detect(frame)
+                              val sb = StringBuilder()
+                              for (i in 0 until found.size()) {
+                                  val block = found.valueAt(i)
+                                      as? com.google.android.gms.vision.text.TextBlock
+                                      ?: continue
+                                  // TextBlock carries its words in components, not in
+                                  // lines, and each component holds the text in value.
+                                  for (part in block.components) {
+                                      val piece = part.value
+                                      if (piece != null && piece.isNotEmpty()) {
+                                          sb.append(piece).append(" ")
+                                      }
+                                  }
+                                  sb.append("\\n")
+                              }
+                              result.success(sb.toString())"""
+          if old_read in t:
+              t = t.replace(old_read, new_read, 1)
+              changed.append('saathi style components')
+          kt.write_text(t)
           print('CHANGED:', ', '.join(changed) if changed else 'nothing')
           PY
           python3 /tmp/p.py
