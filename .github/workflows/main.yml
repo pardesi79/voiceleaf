@@ -3763,6 +3763,79 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Hand the engine the picture shape it accepts
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          kt = None
+          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              kt = p
+          t = kt.read_text()
+          changed = []
+
+          # 1. the engine only accepts ARGB_8888; copy the picture into that shape and
+          #    never let a decode failure escape as a silent platform error
+          old = """                val path = call.argument<String>("path")
+                          if (path == null) {
+                              result.success("")
+                              return@setMethodCallHandler
+                          }
+                          val decoded = android.graphics.BitmapFactory.decodeFile(path)
+                          if (decoded == null) {
+                              result.success("NOBITMAP")
+                              return@setMethodCallHandler
+                          }
+                          // the picture is handed over exactly as it was drawn
+                          val bitmap = decoded"""
+          new = """                val path = call.argument<String>("path")
+                          if (path == null) {
+                              result.success("NOPATH")
+                              return@setMethodCallHandler
+                          }
+                          val decoded = try {
+                              android.graphics.BitmapFactory.decodeFile(path)
+                          } catch (e: Throwable) {
+                              result.success("ERR decode " + e.javaClass.simpleName + ": " + e.message)
+                              return@setMethodCallHandler
+                          }
+                          if (decoded == null) {
+                              result.success("NOBITMAP")
+                              return@setMethodCallHandler
+                          }
+                          // the engine only accepts ARGB_8888, so the picture is copied
+                          // into exactly that shape, laid on white paper
+                          val bitmap = if (decoded.config == android.graphics.Bitmap.Config.ARGB_8888) {
+                              decoded
+                          } else {
+                              val fixed = android.graphics.Bitmap.createBitmap(
+                                  decoded.width, decoded.height,
+                                  android.graphics.Bitmap.Config.ARGB_8888)
+                              val canvas = android.graphics.Canvas(fixed)
+                              canvas.drawColor(android.graphics.Color.WHITE)
+                              canvas.drawBitmap(decoded, 0f, 0f, null)
+                              fixed
+                          }"""
+          if old in t:
+              t = t.replace(old, new, 1)
+              changed.append('ARGB_8888 copy on white')
+
+          # 2. say the rotation out loud, as the other app does
+          old2 = """                    val frame = com.google.android.gms.vision.Frame.Builder()
+                                  .setBitmap(bitmap).build()"""
+          new2 = """                    val frame = com.google.android.gms.vision.Frame.Builder()
+                                  .setBitmap(bitmap)
+                                  .setRotation(0)
+                                  .build()"""
+          if old2 in t:
+              t = t.replace(old2, new2, 1)
+              changed.append('rotation set')
+
+          kt.write_text(t)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
