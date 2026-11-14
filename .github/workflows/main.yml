@@ -1,5 +1,5 @@
 # Voiceleaf build v59
-# build 105
+# build 106
 name: Build Voiceleaf APK
 
 on:
@@ -3154,7 +3154,7 @@ jobs:
                               for (i in 0 until found.size()) {
                                   val block = found.valueAt(i)
                                       as? com.google.android.gms.vision.text.TextBlock
-                                  if (block != null) sb.append(block.text).append("\\n")
+                                  if (block != null) sb.append(block.value).append("\\n")
                               }
                               result.success(sb.toString())
                           } catch (e: Throwable) {
