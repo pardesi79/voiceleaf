@@ -3072,6 +3072,181 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Add the older Google reader as a second opinion
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, glob
+
+          changed, notes = [], []
+
+          # ---------- 1. the old Google OCR, delivered by Play Services (no size cost)
+          cands = [c for c in sorted(glob.glob('android/**/build.gradle*', recursive=True))
+                   if 'app' in c and 'settings' not in c and 'plugin' not in c]
+          if not cands:
+              notes.append('NO GRADLE FILE')
+          else:
+              g = pathlib.Path(cands[0])
+              s = g.read_text()
+              kts = g.name.endswith('.kts')
+              if 'play-services-vision' not in s:
+                  dep = ('    implementation("com.google.android.gms:play-services-vision:20.1.3")\n'
+                         if kts else
+                         "    implementation 'com.google.android.gms:play-services-vision:20.1.3'\n")
+                  if 'dependencies {' in s:
+                      s = s.replace('dependencies {', 'dependencies {\n' + dep, 1)
+                  else:
+                      s += '\n\ndependencies {\n' + dep + '}'
+                  g.write_text(s)
+                  changed.append('gradle: vision')
+
+          # ---------- 2. the manifest line that lets Play Services fetch the OCR files
+          mf = pathlib.Path('android/app/src/main/AndroidManifest.xml')
+          if mf.exists():
+              x = mf.read_text()
+              if 'com.google.android.gms.vision.DEPENDENCIES' not in x:
+                  x = x.replace('<application', '<application', 1)
+                  import re
+                  x = re.sub(r'(<application[^>]*>)',
+                             r'\1\n        <meta-data android:name="com.google.android.gms.vision.DEPENDENCIES" android:value="ocr" />',
+                             x, count=1)
+                  mf.write_text(x)
+                  changed.append('manifest: vision ocr')
+          else:
+              notes.append('no manifest')
+
+          # ---------- 3. a second reader, this time the older Google engine
+          kt = None
+          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              kt = p
+          if kt is None:
+              notes.append('NO MainActivity.kt')
+          else:
+              t = kt.read_text()
+              if 'voiceleaf/vision' not in t:
+                  channel = '''        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/vision")
+                      .setMethodCallHandler { call, result ->
+                          if (call.method != "page") {
+                              result.notImplemented()
+                              return@setMethodCallHandler
+                          }
+                          val path = call.argument<String>("path")
+                          if (path == null) {
+                              result.success("")
+                              return@setMethodCallHandler
+                          }
+                          var detector: com.google.android.gms.vision.text.TextRecognizer? = null
+                          try {
+                              val bitmap = android.graphics.BitmapFactory.decodeFile(path)
+                              detector = com.google.android.gms.vision.text.TextRecognizer
+                                  .Builder(applicationContext).build()
+                              if (!detector.isOperational || bitmap == null) {
+                                  result.success("")
+                                  return@setMethodCallHandler
+                              }
+                              val frame = com.google.android.gms.vision.Frame.Builder()
+                                  .setBitmap(bitmap).build()
+                              val found = detector.detect(frame)
+                              val sb = StringBuilder()
+                              for (block in found) {
+                                  for (line in block.lines) {
+                                      sb.append(line.value).append("\\n")
+                                  }
+                              }
+                              result.success(sb.toString())
+                          } catch (e: Throwable) {
+                              result.success("")
+                          } finally {
+                              try { detector?.release() } catch (_: Throwable) {}
+                          }
+                      }
+          '''
+                  marker = 'super.configureFlutterEngine(flutterEngine)'
+                  if marker in t:
+                      t = t.replace(marker, marker + '\n' + channel, 1)
+                      kt.write_text(t)
+                      changed.append('MainActivity: vision channel')
+                  else:
+                      notes.append('no configureFlutterEngine')
+              else:
+                  notes.append('vision channel already there')
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          print('NOTES:', '; '.join(notes) if notes else 'none')
+          PY
+          python3 /tmp/p.py
+
+      - name: Let the cleaner reading win
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          before = s
+
+          helper = '''  static const MethodChannel _vision = MethodChannel('voiceleaf/vision');
+
+            /// Reads one page with the older Google engine (Mobile Vision). It comes
+            /// from Play Services, so it costs nothing in the app size.
+            static Future<String> _visionText(File f) async {
+              try {
+                final t = await _vision.invokeMethod<String>('page', {'path': f.path});
+                return (t ?? '').trim();
+              } catch (_) {
+                return '';
+              }
+            }
+
+            /// Counts the places where the text breaks a Devanagari rule: a vowel sign
+            /// with no letter under it, or a virama with no consonant after it. Fewer
+            /// breaks means the reading is cleaner, whichever engine produced it.
+            static int _brokenMarks(String t) {
+              final r = t.runes.toList();
+              var bad = 0;
+              for (var i = 0; i < r.length; i++) {
+                final c = r[i];
+                final isMark = (c >= 0x093E && c <= 0x094C) || c == 0x0902 || c == 0x0903;
+                if (isMark) {
+                  final p = i > 0 ? r[i - 1] : 0;
+                  final ok = (p >= 0x0915 && p <= 0x0939) ||
+                      (p >= 0x0905 && p <= 0x0914) ||
+                      (p >= 0x093E && p <= 0x094C) ||
+                      p == 0x0902 || p == 0x0903;
+                  if (!ok) bad++;
+                }
+                if (c == 0x094D) {
+                  final n = i + 1 < r.length ? r[i + 1] : 0;
+                  if (!(n >= 0x0915 && n <= 0x0939)) bad++;
+                }
+              }
+              return bad;
+            }
+
+          '''
+
+          anchor = "  /// Reads one image on the phone with Google ML Kit (offline)."
+          if '_visionText' not in s and anchor in s:
+              s = s.replace(anchor, helper + anchor, 1)
+
+          # after ML Kit has read the page, ask the second engine too and keep the
+          # cleaner reading
+          old = """    // One engine only: Google ML Kit, the same one InstaReader reads with.
+              return await ocrFile(f, mode);"""
+          new = """    final ml = await ocrFile(f, mode);
+              if (mode != 'auto' && mode != 'devanagari') return ml;
+              // A second opinion on Hindi pages: whichever reading breaks fewer
+              // Devanagari rules wins.
+              final vm = await _visionText(f);
+              if (vm.isEmpty) return ml;
+              return _brokenMarks(vm) < _brokenMarks(ml) ? vm : ml;"""
+          if old in s:
+              s = s.replace(old, new, 1)
+
+          ex.write_text(s)
+          print('vision helper:', '_visionText' in s, '| compare added:', '_brokenMarks(vm)' in s, '| changed:', s != before)
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
