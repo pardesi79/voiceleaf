@@ -3836,6 +3836,55 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Use the words inside the PDF, ML Kit for pictures
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          changed = []
+
+          # 1. the words inside the PDF come first. A missing letter is shown as a box so
+          #    the result can be inspected instead of guessed at.
+          old = """    final doc = await PdfDocument.openFile(path);
+              final tmp = await getTemporaryDirectory();
+              final pages = <String>[];"""
+          new = """    // The words stored inside the PDF are exact; reading the picture is not.
+              final layer = await _fromTextLayer(path, from, to);
+              if (layer.length == to - from + 1 && layer.every((p) => p.length > 40)) {
+                final out = <String>[];
+                for (var i = 0; i < layer.length; i++) {
+                  onProgress(i + 1, layer.length, layer[i].length);
+                  final n = from + i;
+                  out.add(pageNumbers ? 'Page $n.\\n${layer[i]}' : layer[i]);
+                }
+                return out;
+              }
+
+              final doc = await PdfDocument.openFile(path);
+              final tmp = await getTemporaryDirectory();
+              final pages = <String>[];"""
+          if old in s and 'final layer = await _fromTextLayer' not in s:
+              s = s.replace(old, new, 1)
+              changed.append('text layer first')
+
+          # 2. when there is no text layer, the picture is read by ML Kit. The older
+          #    engine answers nothing at all on these pages.
+          old2 = """    // The page picture goes straight to the older engine, exactly as drawn.
+              // No language check, no second engine, nothing in between.
+              return await _visionText(f);"""
+          new2 = """    // The picture is read by ML Kit; the older engine answers nothing here.
+              return await ocrFile(f, mode);"""
+          if old2 in s:
+              s = s.replace(old2, new2, 1)
+              changed.append('ML Kit reads the picture')
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
