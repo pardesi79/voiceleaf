@@ -3147,7 +3147,8 @@ jobs:
                                   .setBitmap(bitmap).build()
                               val found = detector.detect(frame)
                               val sb = StringBuilder()
-                              for (block in found) {
+                              for (i in 0 until found.size()) {
+                                  val block = found.valueAt(i)
                                   for (line in block.lines) {
                                       sb.append(line.value).append("\\n")
                                   }
