@@ -3987,6 +3987,66 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Take the PDF text engine out, read the picture instead
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+
+          changed = []
+
+          # ---------- 1. the PDF text engine is taken out for good. It read the words but
+          # 1,438 letters came back unnamed, which broke more words than OCR ever did.
+          p = pathlib.Path('pubspec.yaml')
+          s = p.read_text()
+          before = s
+          s = '\n'.join(l for l in s.split('\n')
+                        if 'pdf_graphics' not in l and 'pdf_document' not in l)
+          if s != before:
+              p.write_text(s)
+              changed.append('pubspec: pdf engine removed')
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # its imports go too
+          before = s
+          s = '\n'.join(l for l in s.split('\n')
+                        if 'package:pdf_document/' not in l and 'package:pdf_graphics/' not in l)
+          if s != before:
+              changed.append('imports removed')
+
+          # ---------- 2. the call that used it goes, so the picture is read again
+          old = """    // The words stored inside the PDF are exact; reading the picture is not.
+              final layer = await _fromTextLayer(path, from, to);
+              if (layer.length == to - from + 1 && layer.every((p) => p.length > 40)) {
+                final out = <String>[];
+                for (var i = 0; i < layer.length; i++) {
+                  onProgress(i + 1, layer.length, layer[i].length);
+                  final n = from + i;
+                  out.add(pageNumbers ? 'Page $n.\\n${layer[i]}' : layer[i]);
+                }
+                return out;
+              }
+
+          """
+          if old in s:
+              s = s.replace(old, '', 1)
+              changed.append('text layer call removed')
+
+          # ---------- 3. and the two helpers that only it used
+          s = re.sub(r"  /// Folds a vowel mark the PDF wrote twice into one\.\n"
+                     r"  static String _foldMarks.*?\n\n", '', s, flags=re.S)
+          s = re.sub(r"  /// Reads the words stored inside the PDF.*?\n  static Future<List<String>> _fromTextLayer.*?\n  \}\n\n",
+                     '', s, flags=re.S)
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          print('_fromTextLayer left:', ex.read_text().count('_fromTextLayer'))
+          print('pg. references left:', ex.read_text().count('pg.'))
+          print('pd. references left:', ex.read_text().count('pd.'))
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
