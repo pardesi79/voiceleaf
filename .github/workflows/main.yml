@@ -5061,6 +5061,25 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Close the file reader its own way
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          changed = []
+
+          # pdfrx closes a document with dispose(), not close()
+          if 'await doc?.close();' in s:
+              s = s.replace('await doc?.close();', 'await doc?.dispose();')
+              changed.append('document closed the way pdfrx expects')
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
