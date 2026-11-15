@@ -4540,6 +4540,171 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Add the new wrong word shapes to the fixer
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # the shapes this reader produced on the last run, added to the same list
+          extra = """      'सिद्वांत': 'सिद्धांत',
+                'सिब्दांत': 'सिद्धांत',
+                'बौ्द्र': 'बौद्ध',
+                'पश्विमी': 'पश्चिमी',
+                'मध्यकारलीन': 'मध्यकालीन',
+                'अमत्य': 'अमर्त्य',
+                'रू्प': 'रूप',
+                'आअरस्तू': 'अरस्तू',
+                'सरदी': 'सदी',
+                'विश्ृविद्यालयों': 'विश्वविद्यालयों',
+                'स्वारथों': 'स्वार्थों',
+                'आंकडेजूटाते': 'आंकड़े जुटाते',
+                'बढी': 'बढ़ी',
+          """
+          anchor = "      'स्टअर्ट': 'स्टुअर्ट',"
+          if 'सिद्वांत' not in s and anchor in s:
+              s = s.replace(anchor, extra + anchor, 1)
+              ex.write_text(s)
+              print('CHANGED: the new wrong shapes added')
+          else:
+              print('CHANGED: nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Ask the phone spell checker about a few words
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          kt = None
+          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              kt = p
+          t = kt.read_text()
+
+          bridge = '''
+                  // Asks the phone's own spell checker about a few words. It is the same
+                  // dictionary the keyboard uses, and the system keeps it up to date.
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/spell")
+                      .setMethodCallHandler { call, result ->
+                          if (call.method != "probe") {
+                              result.notImplemented()
+                              return@setMethodCallHandler
+                          }
+                          val words = call.argument<List<String>>("words") ?: emptyList()
+                          if (words.isEmpty()) {
+                              result.success("NOWORDS")
+                              return@setMethodCallHandler
+                          }
+                          val sb = StringBuilder()
+                          var session: android.view.textservice.SpellCheckerSession? = null
+                          var answered = false
+                          try {
+                              val tsm = applicationContext
+                                  .getSystemService(android.content.Context.TEXT_SERVICES_MANAGER_SERVICE)
+                                      as android.view.textservice.TextServicesManager
+                              val locale = java.util.Locale("hi", "IN")
+                              val listener =
+                                  object : android.view.textservice.SpellCheckerSession
+                                      .SpellCheckerSessionListener {
+                                      override fun onGetSuggestions(
+                                          results: Array<out android.view.textservice.SuggestionsInfo>?
+                                      ) {
+                                          if (results != null) {
+                                              for (r in results) {
+                                                  val n = r.suggestionsCount
+                                                  val word = if (n > 0) r.getSuggestion(0) else ""
+                                                  sb.append(r.suggestionsAttributes).append("|")
+                                                      .append(n).append("|").append(word).append(";")
+                                              }
+                                          }
+                                      }
+
+                                      override fun onGetSentenceSuggestions(
+                                          results: Array<out android.view.textservice.SentenceSuggestionsInfo>?
+                                      ) {}
+                                  }
+                              session = tsm.newSpellCheckerSession(null, locale, listener, true)
+                              if (session == null) {
+                                  result.success("NOSERVICE")
+                                  return@setMethodCallHandler
+                              }
+                              for (w in words) {
+                                  session.getSuggestions(
+                                      android.view.textservice.TextInfo(w), 3)
+                              }
+                              // the checker answers on another thread, so wait a moment
+                              var waited = 0
+                              while (waited < 40 && sb.length == 0) {
+                                  Thread.sleep(100)
+                                  waited++
+                              }
+                              if (!answered) {
+                                  answered = true
+                                  result.success(if (sb.isEmpty) "NOSUGGESTIONS" else sb.toString())
+                              }
+                          } catch (e: Throwable) {
+                              if (!answered) {
+                                  answered = true
+                                  result.success("ERR " + e.javaClass.simpleName + ": " + e.message)
+                              }
+                          } finally {
+                              try { session?.close() } catch (_: Throwable) {}
+                          }
+                      }
+          '''
+          anchor = '        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/ocr")'
+          if 'voiceleaf/spell' not in t and anchor in t:
+              t = t.replace(anchor, bridge + anchor, 1)
+              kt.write_text(t)
+              print('CHANGED: spell probe added')
+          else:
+              print('CHANGED: nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Show the spell answer on the engine check
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          p = pathlib.Path('lib/preferences_page.dart')
+          s = p.read_text()
+
+          old = """      const ch = MethodChannel('voiceleaf/ocr');
+                msg = await ch.invokeMethod<String>('smoke') ?? 'no answer from the engine';
+              } catch (e) {
+                msg = 'failed: $e';
+              }"""
+          new = """      const ch = MethodChannel('voiceleaf/ocr');
+                msg = await ch.invokeMethod<String>('smoke') ?? 'no answer from the engine';
+                // ask the phone's own spell checker about a few words, so we can see
+                // whether it knows Hindi at all
+                try {
+                  const spell = MethodChannel('voiceleaf/spell');
+                  final r = await spell.invokeMethod<String>('probe', {
+                    'words': <String>[
+                      'सिद्धांत', 'सिद्वांत', 'बौद्ध', 'बौ्द्र',
+                      'पश्चिमी', 'पश्विमी', 'तर्कों', 'तकों',
+                    ],
+                  });
+                  msg = '$msg\\n\\nSpell check: ${r ?? "no answer"}';
+                } catch (e) {
+                  msg = '$msg\\n\\nSpell check: failed ($e)';
+                }
+              } catch (e) {
+                msg = 'failed: $e';
+              }"""
+          if old in s and 'voiceleaf/spell' not in s:
+              s = s.replace(old, new, 1)
+              p.write_text(s)
+              print('CHANGED: spell result shown on the engine check')
+          else:
+              print('CHANGED: nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
