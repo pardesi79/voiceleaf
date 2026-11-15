@@ -4705,6 +4705,32 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Fix the two spell checker calls
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          kt = None
+          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              kt = p
+          t = kt.read_text()
+          changed = []
+
+          # the Android class spells it getSuggestionAt, not getSuggestion
+          if 'getSuggestion(0)' in t:
+              t = t.replace('r.getSuggestion(0)', 'r.getSuggestionAt(0)')
+              changed.append('suggestion call fixed')
+
+          # StringBuilder emptiness is a function in Kotlin
+          if 'if (sb.isEmpty)' in t:
+              t = t.replace('if (sb.isEmpty)', 'if (sb.isEmpty())')
+              changed.append('emptiness call fixed')
+
+          kt.write_text(t)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
