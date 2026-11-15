@@ -4047,6 +4047,173 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Add the Java PDF reader the other app uses
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          # the workflow writes this file a few steps earlier, so it must be there now
+          found = list(pathlib.Path('android/app').glob('build.gradle*'))
+          if not found:
+              found = list(pathlib.Path('android').rglob('build.gradle*'))
+          if not found:
+              print('CHANGED: no gradle file at all')
+          else:
+              changed = []
+              for g in found:
+                  s = g.read_text()
+                  if 'pdfbox-android' in s:
+                      continue
+                  dep = ("    implementation 'com.tom_roush:pdfbox-android:2.0.27.0'\n"
+                         if g.suffix != '.kts' else
+                         '    implementation("com.tom_roush:pdfbox-android:2.0.27.0")\n')
+                  if 'dependencies {' in s:
+                      s = s.replace('dependencies {', 'dependencies {\n' + dep, 1)
+                  else:
+                      s += '\n\ndependencies {\n' + dep + '}\n'
+                  g.write_text(s)
+                  changed.append(g.name)
+              print('CHANGED:', ('gradle pdfbox added to ' + ', '.join(changed)) if changed else 'already there')
+          PY
+          python3 /tmp/p.py
+
+      - name: Give the phone a Java PDF reader that works on a copy
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+
+          changed = []
+
+          # ---------- 1. the Java PDF reader that the other app uses, added back
+          kt = None
+          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              kt = p
+          t = kt.read_text()
+
+          if 'voiceleaf/pdftext' not in t:
+              bridge = '''
+                  // Reads the words stored inside a PDF with the same Java reader the
+                  // other app uses. It works on a copy so the page can still be drawn.
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/pdftext")
+                      .setMethodCallHandler { call, result ->
+                          if (call.method != "page") {
+                              result.notImplemented()
+                              return@setMethodCallHandler
+                          }
+                          val path = call.argument<String>("path")
+                          if (path == null) {
+                              result.success("NOPATH")
+                              return@setMethodCallHandler
+                          }
+                          var copy: java.io.File? = null
+                          try {
+                              val dir = cacheDir
+                              copy = java.io.File(dir, "pt_" + System.currentTimeMillis() + ".pdf")
+                              java.io.File(path).copyTo(copy, overwrite = true)
+                              com.tom_roush.pdfbox.pdmodel.PDDocument.load(copy).use { doc ->
+                                  val text = com.tom_roush.pdfbox.text.PDFTextStripper().getText(doc)
+                                  val out = text.trim()
+                                  result.success(if (out.isEmpty()) "EMPTY" else out)
+                              }
+                          } catch (e: Throwable) {
+                              result.success("ERR " + e.javaClass.simpleName + ": " + e.message)
+                          } finally {
+                              try { copy?.delete() } catch (_: Throwable) {}
+                          }
+                      }
+          '''
+              anchor = '        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/ocr")'
+              if anchor in t:
+                  t = t.replace(anchor, bridge + anchor, 1)
+                  kt.write_text(t)
+                  changed.append('Kotlin reader added')
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Ask the Java reader for the words before reading the picture
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          # ---------- 1. the Java reader itself must be in the build
+          g = None
+          for p in list(pathlib.Path('android/app').glob('build.gradle*')):
+              g = p
+          if g is None:
+              # the workflow writes it later; leave a marker file it can pick up
+              print('CHANGED: no gradle yet')
+          else:
+              s = g.read_text()
+              if 'pdfbox-android' not in s:
+                  dep = ("    implementation 'com.tom_roush:pdfbox-android:2.0.27.0'\n")
+                  if 'dependencies {' in s:
+                      s = s.replace('dependencies {', 'dependencies {\n' + dep, 1)
+                  else:
+                      s += '\n\ndependencies {\n' + dep + '}\n'
+                  g.write_text(s)
+                  changed.append('gradle: pdfbox-android')
+
+          # ---------- 2. Dart asks the Java reader first, and falls back to the picture
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          helper = '''
+            /// Reads the words stored inside the PDF with the Java reader. It works on a
+            /// copy of the file, so the page can still be drawn afterwards.
+            static const MethodChannel _pdftext = MethodChannel('voiceleaf/pdftext');
+
+            static Future<String> _pdfTextLayer(String path) async {
+              try {
+                final t = await _pdftext.invokeMethod<String>('page', {'path': path});
+                return (t ?? '').trim();
+              } catch (e) {
+                return 'ERR $e';
+              }
+            }
+
+          '''
+          anchor = "  /// Reads one image on the phone with Google ML Kit (offline)."
+          if '_pdfTextLayer' not in s and anchor in s:
+              s = s.replace(anchor, helper + anchor, 1)
+              changed.append('Dart helper added')
+
+          old = """    final doc = await PdfDocument.openFile(path);
+              final tmp = await getTemporaryDirectory();
+              final pages = <String>[];"""
+          new = """    // The words inside a digital PDF are exact; reading its picture is not.
+              // Only a clean reading is trusted: a page that came back with unnamed
+              // letters, or one that came back empty, goes to OCR instead.
+              final whole = await _pdfTextLayer(path);
+              if (whole.length > 200 && !whole.contains('\\u0000') && !whole.startsWith('ERR')) {
+                final parts = whole.split(RegExp(r'\\f'));
+                final out = <String>[];
+                for (var i = 0; i < parts.length; i++) {
+                  final n = from + i;
+                  if (n > to) break;
+                  final body = parts[i].trim();
+                  if (body.isEmpty) continue;
+                  onProgress(out.length + 1, to - from + 1, body.length);
+                  out.add(pageNumbers ? 'Page $n.\\n$body' : body);
+                }
+                if (out.isNotEmpty) return out;
+              }
+
+              final doc = await PdfDocument.openFile(path);
+              final tmp = await getTemporaryDirectory();
+              final pages = <String>[];"""
+          if old in s and '_pdfTextLayer(path)' not in s:
+              s = s.replace(old, new, 1)
+              changed.append('Java reader tried first')
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
