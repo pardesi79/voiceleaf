@@ -4832,6 +4832,235 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Read the letters with the file reader
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          # ---------- 1. the reader that reads the letters right ----------
+          p = pathlib.Path('pubspec.yaml')
+          s = p.read_text()
+          if 'pdfrx:' not in s:
+              s = s.replace('  pdfx: ^2.9.2', '  pdfx: ^2.9.2\n  pdfrx: ^2.12.0', 1)
+              p.write_text(s)
+              changed.append('pubspec: pdfrx added')
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          # ---------- 2. the import ----------
+          if "package:pdfrx/pdfrx.dart" not in s:
+              s = s.replace("import 'package:pdfx/pdfx.dart';",
+                            "import 'package:pdfx/pdfx.dart';\nimport 'package:pdfrx/pdfrx.dart' as pdfrx;", 1)
+              changed.append('import added')
+
+          # ---------- 3. the two helpers ----------
+          helpers = r'''
+            /// The letters the file itself carries. pdfium reads them exactly, but it
+            /// splits words that are close together, so only the letters are kept.
+            static Future<List<String>> _fileLetters(String path, int from, int to) async {
+              final out = <String>[];
+              pdfrx.PdfDocument? doc;
+              try {
+                doc = await pdfrx.PdfDocument.openFile(path);
+                final last = to < doc.pages.length ? to : doc.pages.length;
+                for (var i = from; i <= last; i++) {
+                  var t = '';
+                  try {
+                    final page = doc.pages[i - 1];
+                    final txt = await page.loadStructuredText();
+                    t = txt.fullText;
+                  } catch (_) {
+                    t = '';
+                  }
+                  out.add(t);
+                }
+              } catch (_) {
+                return const [];
+              } finally {
+                try {
+                  await doc?.close();
+                } catch (_) {}
+              }
+              return out;
+            }
+
+            static bool _gap(String c) =>
+                c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\f';
+
+            /// Takes the letters from [letters] and the word breaks from [reading].
+            ///
+            /// The file has every letter right and the word breaks wrong; the reading
+            /// has the word breaks right and some letters wrong. Walking the two side by
+            /// side gives both.
+            static String _weave(String letters, String reading) {
+              final L = <String>[];
+              for (final c in letters.split('')) {
+                if (!_gap(c)) L.add(c);
+              }
+              final O = <String>[];
+              final startsWord = <bool>[];
+              var pending = true;
+              for (final c in reading.split('')) {
+                if (_gap(c)) {
+                  pending = true;
+                  continue;
+                }
+                O.add(c);
+                startsWord.add(pending);
+                pending = false;
+              }
+              if (L.isEmpty) return reading;
+              if (O.isEmpty) return letters;
+
+              // walk both, nudging forward when they slip out of step
+              final breakAt = <int>{};
+              var i = 0;
+              var j = 0;
+              while (i < O.length && j < L.length) {
+                if (O[i] == L[j]) {
+                  if (startsWord[i]) breakAt.add(j);
+                  i++;
+                  j++;
+                  continue;
+                }
+                // look a little ahead on both sides and take the smallest jump
+                var bestI = -1;
+                var bestJ = -1;
+                var bestCost = 99;
+                for (var di = 0; di <= 4 && i + di < O.length; di++) {
+                  for (var dj = 0; dj <= 4 && j + dj < L.length; dj++) {
+                    if (di == 0 && dj == 0) continue;
+                    if (O[i + di] == L[j + dj] && di + dj < bestCost) {
+                      bestCost = di + dj;
+                      bestI = i + di;
+                      bestJ = j + dj;
+                    }
+                  }
+                }
+                if (bestI < 0) {
+                  i++;
+                  j++;
+                } else {
+                  i = bestI;
+                  j = bestJ;
+                }
+              }
+
+              final out = StringBuffer();
+              for (var k = 0; k < L.length; k++) {
+                if (breakAt.contains(k) && out.isNotEmpty) out.write(' ');
+                out.write(L[k]);
+              }
+              return out.toString();
+            }
+
+            /// Puts the letters from the file together with the words from the reading.
+            static Future<List<String>> _weavePages(
+                String path, int from, int to, List<String> read) async {
+              final letters = await _fileLetters(path, from, to);
+              if (letters.isEmpty || letters.length < read.length) return read;
+              final out = <String>[];
+              for (var i = 0; i < read.length && i < letters.length; i++) {
+                final woven = _weave(letters[i], read[i]);
+                out.add(woven.trim().isEmpty ? read[i] : woven);
+              }
+              return out.length == read.length ? out : read;
+            }
+
+          '''
+          anchor = '  static Future<int> pdfPageCount(String path) async {'
+          if '_weavePages' not in s and anchor in s:
+              s = s.replace(anchor, helpers + anchor, 1)
+              changed.append('weave helpers added')
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Put the reading together with those letters
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          old = """    } finally {
+                await doc.close();
+              }
+              return pages;
+            }
+
+            static Future<List<String>> docx(String path) async {"""
+
+          new = """    } finally {
+                await doc.close();
+              }
+              // The file has every letter right and the word breaks wrong; the reading
+              // has the word breaks right and a few letters wrong. Put the two together.
+              if (!pageNumbers) {
+                try {
+                  return await _weavePages(path, from, to, pages);
+                } catch (_) {
+                  return pages;
+                }
+              }
+              return pages;
+            }
+
+            static Future<List<String>> docx(String path) async {"""
+
+          if old in s and '_weavePages(path, from, to, pages)' not in s:
+              s = s.replace(old, new, 1)
+              ex.write_text(s)
+              print('CHANGED: the reading is woven with the letters from the file')
+          else:
+              print('CHANGED: nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Set the file reader up at start
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          # ---------- 1. the page must be loaded before its text can be read ----------
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          if 'loadStructuredText()' in s:
+              s = s.replace('page.loadStructuredText()', 'page.loadStructuredText(ensureLoaded: true)')
+              changed.append('text read waits for the page to load')
+              ex.write_text(s)
+
+          # ---------- 2. pdfrx needs one setup call before its API is used ----------
+          main = None
+          for p in pathlib.Path('lib').glob('main.dart'):
+              main = p
+          if main is not None:
+              m = main.read_text()
+              if 'pdfrxFlutterInitialize' not in m:
+                  if "import 'package:pdfrx/pdfrx.dart';" not in m:
+                      m = m.replace("import 'package:flutter/material.dart';",
+                                    "import 'package:flutter/material.dart';\nimport 'package:pdfrx/pdfrx.dart';", 1)
+                  if 'void main() {' in m:
+                      m = m.replace('void main() {', 'void main() {\n  pdfrxFlutterInitialize();', 1)
+                      changed.append('pdfrx set up at start')
+                  elif 'Future<void> main() async {' in m:
+                      m = m.replace('Future<void> main() async {',
+                                    'Future<void> main() async {\n  pdfrxFlutterInitialize();', 1)
+                      changed.append('pdfrx set up at start')
+                  main.write_text(m)
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
