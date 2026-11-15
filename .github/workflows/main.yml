@@ -4731,6 +4731,107 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Write the spell answer into the dialog
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          p = pathlib.Path('lib/preferences_page.dart')
+          s = p.read_text()
+
+          old = """  Future<void> _testEngine(BuildContext context) async {
+              String msg;
+              try {
+                const ch = MethodChannel('voiceleaf/ocr');
+                msg = await ch.invokeMethod<String>('smoke') ?? 'no answer from the engine';
+                // ask the phone's own spell checker about a few words, so we can see
+                // whether it knows Hindi at all
+                try {
+                  const spell = MethodChannel('voiceleaf/spell');
+                  final r = await spell.invokeMethod<String>('probe', {
+                    'words': <String>[
+                      'सिद्धांत', 'सिद्वांत', 'बौद्ध', 'बौ्द्र',
+                      'पश्चिमी', 'पश्विमी', 'तर्कों', 'तकों',
+                    ],
+                  });
+                  msg = '$msg\\n\\nSpell check: ${r ?? "no answer"}';
+                } catch (e) {
+                  msg = '$msg\\n\\nSpell check: failed ($e)';
+                }
+              } catch (e) {
+                msg = 'failed: $e';
+              }
+              if (!context.mounted) return;"""
+
+          new = """  Future<void> _testEngine(BuildContext context) async {
+              var msg = '';
+              try {
+                const ch = MethodChannel('voiceleaf/ocr');
+                msg = await ch.invokeMethod<String>('smoke') ?? 'no answer from the engine';
+              } catch (e) {
+                msg = 'engine check failed: $e';
+              }
+
+              // The spell answer is asked for with a hard limit, so the dialog can never
+              // be held up by it. Whatever happens, a line is written.
+              var spell = 'no answer (took too long)';
+              try {
+                const spellCh = MethodChannel('voiceleaf/spell');
+                final r = await spellCh.invokeMethod<String>('probe', {
+                  'words': <String>[
+                    'सिद्धांत', 'सिद्वांत', 'बौद्ध', 'बौ्द्र',
+                    'पश्चिमी', 'पश्विमी', 'तर्कों', 'तकों',
+                  ],
+                }).timeout(const Duration(seconds: 6),
+                    onTimeout: () => 'TIMEOUT');
+                spell = (r == null || r.isEmpty) ? 'empty answer' : r;
+              } catch (e) {
+                spell = 'failed: $e';
+              }
+
+              msg = '$msg\\n\\n--- Spell check ---\\n$spell';
+              if (!context.mounted) return;"""
+
+          if old in s:
+              s = s.replace(old, new, 1)
+              p.write_text(s)
+              print('CHANGED: spell line always written into the dialog')
+          else:
+              print('CHANGED: nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Shorten the spell wait
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          kt = None
+          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              kt = p
+          t = kt.read_text()
+
+          # two seconds is enough for the checker to answer, and short enough that the
+          # screen never feels stuck
+          old = """                    var waited = 0
+                              while (waited < 40 && sb.length == 0) {
+                                  Thread.sleep(100)
+                                  waited++
+                              }"""
+          new = """                    var waited = 0
+                              while (waited < 20 && sb.length == 0) {
+                                  Thread.sleep(100)
+                                  waited++
+                              }"""
+          if old in t:
+              t = t.replace(old, new, 1)
+              kt.write_text(t)
+              print('CHANGED: spell wait cut to two seconds')
+          else:
+              print('CHANGED: nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
