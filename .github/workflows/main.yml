@@ -4052,7 +4052,9 @@ jobs:
           cat > /tmp/p.py <<'PY'
           import pathlib
 
-          # the workflow writes this file a few steps earlier, so it must be there now
+          # the Maven group uses a hyphen (com.tom-roush); the Java package inside uses an
+          # underscore (com.tom_roush). Getting these two mixed up is what broke the last
+          # build, so the coordinate is written exactly as Maven publishes it.
           found = list(pathlib.Path('android/app').glob('build.gradle*'))
           if not found:
               found = list(pathlib.Path('android').rglob('build.gradle*'))
@@ -4063,10 +4065,14 @@ jobs:
               for g in found:
                   s = g.read_text()
                   if 'pdfbox-android' in s:
+                      # a wrong coordinate may already be there from an earlier run
+                      s = s.replace('com.tom_roush:pdfbox-android', 'com.tom-roush:pdfbox-android')
+                      g.write_text(s)
+                      changed.append(g.name + ' (fixed)')
                       continue
-                  dep = ("    implementation 'com.tom_roush:pdfbox-android:2.0.27.0'\n"
-                         if g.suffix != '.kts' else
-                         '    implementation("com.tom_roush:pdfbox-android:2.0.27.0")\n')
+                  dep = ('    implementation("com.tom-roush:pdfbox-android:2.0.27.0")\n'
+                         if g.suffix == '.kts' else
+                         "    implementation 'com.tom-roush:pdfbox-android:2.0.27.0'\n")
                   if 'dependencies {' in s:
                       s = s.replace('dependencies {', 'dependencies {\n' + dep, 1)
                   else:
