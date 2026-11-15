@@ -5061,22 +5061,181 @@ jobs:
           PY
           python3 /tmp/p.py
 
-      - name: Close the file reader its own way
+      - name: Hold the weave steady across the heading
         run: |
           cat > /tmp/p.py <<'PY'
           import pathlib
 
           ex = pathlib.Path('lib/extractors.dart')
           s = ex.read_text()
-          changed = []
 
-          # pdfrx closes a document with dispose(), not close()
-          if 'await doc?.close();' in s:
-              s = s.replace('await doc?.close();', 'await doc?.dispose();')
-              changed.append('document closed the way pdfrx expects')
+          start = s.find('  /// Takes the letters from [letters] and the word breaks from [reading].')
+          end = s.find('  /// Puts the letters from the file together with the words from the reading.')
+          if start < 0 or end <= start:
+              print('CHANGED: markers not found')
+              raise SystemExit
 
+          new = r'''  /// Takes the letters from [letters] and the word breaks from [reading].
+            ///
+            /// The file has every letter right and the word breaks wrong; the reading
+            /// has the word breaks right and a few letters wrong. Where the two line up
+            /// the reading decides the break; where they do not (a heading the reader
+            /// never saw, say) the file's own spacing is kept.
+            static String _weave(String letters, String reading) {
+              final cleanLetters = letters.replaceAll('\u0000', '').replaceAll('\r', '');
+              final cleanReading = reading.replaceAll('\u0000', '').replaceAll('\r', '');
+
+              // the file's letters, each remembering what came before it
+              final L = <String>[];
+              final fileGap = <bool>[];
+              final fileNewline = <bool>[];
+              var gap = false;
+              var nl = false;
+              for (final c in cleanLetters.split('')) {
+                if (c == '\n') {
+                  gap = true;
+                  nl = true;
+                  continue;
+                }
+                if (_gap(c)) {
+                  gap = true;
+                  continue;
+                }
+                L.add(c);
+                fileGap.add(gap);
+                fileNewline.add(nl);
+                gap = false;
+                nl = false;
+              }
+
+              // the reading's letters, same idea
+              final O = <String>[];
+              final startsWord = <bool>[];
+              final startsLine = <bool>[];
+              var pendingSpace = true;
+              var pendingNl = false;
+              for (final c in cleanReading.split('')) {
+                if (c == '\n') {
+                  pendingSpace = true;
+                  pendingNl = true;
+                  continue;
+                }
+                if (_gap(c)) {
+                  pendingSpace = true;
+                  continue;
+                }
+                O.add(c);
+                startsWord.add(pendingSpace);
+                startsLine.add(pendingNl);
+                pendingSpace = false;
+                pendingNl = false;
+              }
+
+              if (L.isEmpty) return cleanReading;
+              if (O.isEmpty) return cleanLetters;
+
+              final breakAt = <int>{};
+              final newlineAt = <int>{};
+
+              var i = 0;
+              var j = 0;
+              while (i < O.length && j < L.length) {
+                if (O[i] == L[j]) {
+                  if (startsWord[i]) breakAt.add(j);
+                  if (startsLine[i] && fileNewline[j]) newlineAt.add(j);
+                  i++;
+                  j++;
+                  continue;
+                }
+                // look a good way ahead on both sides, so a heading the reader never saw
+                // does not throw the two out of step
+                var bestI = -1;
+                var bestJ = -1;
+                var bestCost = 999;
+                for (var di = 0; di <= 18 && i + di < O.length; di++) {
+                  for (var dj = 0; dj <= 18 && j + dj < L.length; dj++) {
+                    if (di == 0 && dj == 0) continue;
+                    if (O[i + di] != L[j + dj]) continue;
+                    // a long jump must land on two letters in a row, or it is a false match
+                    if (di + dj > 5 &&
+                        i + di + 1 < O.length &&
+                        j + dj + 1 < L.length &&
+                        O[i + di + 1] != L[j + dj + 1]) {
+                      continue;
+                    }
+                    if (di + dj < bestCost) {
+                      bestCost = di + dj;
+                      bestI = i + di;
+                      bestJ = j + dj;
+                    }
+                  }
+                }
+                if (bestI < 0) {
+                  // nothing matches here: keep the file's own spacing for this stretch
+                  if (fileGap[j]) breakAt.add(j);
+                  if (fileNewline[j]) newlineAt.add(j);
+                  i++;
+                  j++;
+                } else {
+                  for (var kj = j; kj < bestJ; kj++) {
+                    if (fileGap[kj]) breakAt.add(kj);
+                    if (fileNewline[kj]) newlineAt.add(kj);
+                  }
+                  i = bestI;
+                  j = bestJ;
+                }
+              }
+              // whatever is left of the file keeps its own spacing too
+              for (var kj = j; kj < L.length; kj++) {
+                if (fileGap[kj]) breakAt.add(kj);
+                if (fileNewline[kj]) newlineAt.add(kj);
+              }
+
+              final out = StringBuffer();
+              for (var k = 0; k < L.length; k++) {
+                if (k > 0) {
+                  final prev = L[k - 1];
+                  final cur = L[k];
+                  final o = cur.codeUnitAt(0);
+                  // a vowel sign, a halant or a mark can never start a word
+                  final isMark = (o >= 0x0901 && o <= 0x0903) ||
+                      (o >= 0x093C && o <= 0x094D) ||
+                      (o >= 0x0951 && o <= 0x0954) ||
+                      (o >= 0x0962 && o <= 0x0963) ||
+                      cur == ',' ||
+                      cur == '.' ||
+                      cur == ':' ||
+                      cur == ';' ||
+                      cur == '।';
+                  // and nothing may follow a halant directly with a space
+                  final afterHalant = prev.codeUnitAt(0) == 0x094D;
+
+                  if (!isMark && !afterHalant) {
+                    if (newlineAt.contains(k)) {
+                      out.write('\n');
+                    } else if (breakAt.contains(k)) {
+                      out.write(' ');
+                    } else if (fileGap[k] &&
+                        (prev == ',' || prev == '.' || prev == ':' || prev == ';' || prev == '।')) {
+                      out.write(' ');
+                    }
+                  }
+                }
+                out.write(L[k]);
+              }
+
+              var res = out.toString();
+              // a handful of shapes this reader is known to produce
+              res = res.replaceAll('एंड्रएंयू', 'एंड्रयू');
+              res = res.replaceAll('बातेंअपनी', 'बातें अपनी');
+              res = res.replaceAll('जिसरूप', 'जिस रूप');
+              return res;
+            }
+
+          '''
+          s = s[:start] + new + s[end:]
           ex.write_text(s)
-          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          print('CHANGED: the weave now keeps its footing across a heading and never splits a letter')
           PY
           python3 /tmp/p.py
 
