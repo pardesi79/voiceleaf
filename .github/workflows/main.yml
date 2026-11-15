@@ -4386,6 +4386,119 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Put right the words the reader gets wrong
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          # ---------- 1. the reader keeps a page even when some letters are unnamed:
+          # dropping the holes beats throwing the whole reading away
+          kt = None
+          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              kt = p
+          t = kt.read_text()
+          old = """                        val out = text.trim()
+                                  result.success(if (out.isEmpty()) "EMPTY" else out)"""
+          new = """                        // a letter the PDF never named comes back as a hole.
+                                  // Dropping the holes keeps the rest of the page.
+                                  val out = text.replace("\\u0000", "").trim()
+                                  result.success(if (out.isEmpty()) "EMPTY" else out)"""
+          if old in t:
+              t = t.replace(old, new, 1)
+              kt.write_text(t)
+              changed.append('reader drops holes instead of the page')
+
+          # ---------- 2. the words the reader gets wrong are put right
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          cleaner = '''
+            /// Puts right the words this reader is known to get wrong. The list was
+            /// built by measuring a real Hindi assignment against its own text.
+            static String cleanHindiWords(String input) {
+              var t = input.replaceAll('\\u0000', '');
+              // two vowel signs cannot follow one another, so a repeat is a misread
+              t = t.replaceAllMapped(
+                  RegExp(r'([\\u093E-\\u094C])[\\u093E-\\u094C]+'), (m) => m[1]!);
+              const fix = <String, String>{
+                'सिद्धरांत': 'सिद्धांत',
+                'सिद्ध्रांत': 'सिद्धांत',
+                'माक्स्सवादी': 'मार्क्सवादी',
+                'माक्स्सवाद': 'मार्क्सवाद',
+                'माक्स्स': 'मार्क्स',
+                'माव्स्स': 'मार्क्स',
+                'माक्र्स': 'मार्क्स',
+                'तकों': 'तर्कों',
+                'तरकों': 'तर्कों',
+                'वगर्ग': 'वर्ग',
+                'चचर्चा': 'चर्चा',
+                'स्वाथों': 'स्वार्थों',
+                'अमत्त्य': 'अमर्त्य',
+                'अमत् ': 'अमर्त्य ',
+                'पड़डी': 'पड़ी',
+                'बिल्कूल': 'बिल्कुल',
+                'मजटूर': 'मजदूर',
+                'प्रटूषण': 'प्रदूषण',
+                'समुद्ध': 'समुद्र',
+                'इकट्टा': 'इकट्ठा',
+                'इकट्रा': 'इकट्ठा',
+                'अनिवाय ': 'अनिवार्य ',
+                'इंट्रोडवशन': 'इंट्रोडक्शन',
+                'यूनिवर्सिंटी': 'यूनिवर्सिटी',
+                'भार्गवि': 'भार्गव',
+                'साइझा': 'साझा',
+                'अपराथ': 'अपराध',
+                'आधिकार': 'अधिकार',
+                'विद्धानों': 'विद्वानों',
+                'प्राचवीन': 'प्राचीन',
+                'बीस्वीं': 'बीसवीं',
+                'बीसरवीं': 'बीसवीं',
+                'उन्नीसवीं सरदी': 'उन्नीसवीं सदी',
+                'विश्वृ': 'विश्व',
+                'शाश्चत': 'शाश्वत',
+                'बौ्ध': 'बौद्ध',
+                'हआ': 'हुआ',
+                'आपनी': 'अपनी',
+                'आक्षर': 'अक्षर',
+                'स्टअर्ट': 'स्टुअर्ट',
+                'विसेंट': 'विंसेंट',
+              };
+              fix.forEach((bad, good) => t = t.replaceAll(bad, good));
+              return t;
+            }
+
+          '''
+          anchor = "  /// Reads one image on the phone with Google ML Kit (offline)."
+          if 'cleanHindiWords' not in s and anchor in s:
+              s = s.replace(anchor, cleaner + anchor, 1)
+              changed.append('word fixer added')
+
+          # ---------- 3. it runs on every reading, and the debug line stops being read out
+          if 'return t.text;' in s and 'cleanHindiWords(t.text)' not in s:
+              s = s.replace('return t.text;', 'return cleanHindiWords(t.text);')
+              changed.append('fixer applied to the reading')
+
+          s = s.replace("? 'Page $n.\\n[pdfbox $probe]\\n$body'", "? 'Page $n.\\n$body'")
+          s = s.replace(": '[pdfbox $probe]\\n$body');", ": body);")
+          if 'pdfbox $probe' not in s:
+              changed.append('debug line taken out of the book')
+
+          # ---------- 4. a slightly larger page keeps small letters sharp
+          old4 = """          width: w * 2,
+                    height: h * 2,"""
+          new4 = """          width: w * 2.65,
+                    height: h * 2.65,"""
+          if old4 in s:
+              s = s.replace(old4, new4, 1)
+              changed.append('page drawn a little larger')
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
