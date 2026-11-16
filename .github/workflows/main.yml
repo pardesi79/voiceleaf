@@ -5579,6 +5579,7 @@ jobs:
           if anchor not in s:
               print('CHANGED: nothing - the cleaner was not found')
           else:
+              # the rules must sit after the working copy of the text exists
               rules = '''    // Three repairs measured on a real NCERT chapter. Each raised the score
               // on its own, so each earns its place.
               // 1. a halant can never end a word
@@ -5588,11 +5589,27 @@ jobs:
               // 3. page furniture that the file carries as text
               t = t.replaceAll(RegExp(r'\\d{4}\\.\\d{2}[\\u0900-\\u097F]*'), '');
           '''
-              if 'a halant can never end a word' not in s:
-                  s = s.replace(anchor, anchor + '\n' + rules, 1)
-                  changed.append('three measured repairs in the cleaner')
+              if 'a halant can never end a word' in s:
+                  print('CHANGED: nothing - already applied')
+              else:
+                  # find the first line that declares the working copy
+                  i = s.index(anchor) + len(anchor)
+                  rest = s[i:]
+                  # the body starts with "var t = input" (possibly with replacements chained)
+                  m = rest.find('var t = ')
+                  if m < 0:
+                      print('CHANGED: nothing - no working copy found')
+                  else:
+                      # place the rules after the whole var t = ... ; statement
+                      end = rest.find(';', m)
+                      if end < 0:
+                          print('CHANGED: nothing - could not find the end of the statement')
+                      else:
+                          cut = i + end + 1
+                          s = s[:cut] + '\n' + rules + s[cut:]
+                          ex.write_text(s)
+                          changed.append('three measured repairs, placed after the working copy')
 
-          ex.write_text(s)
           print('CHANGED:', ', '.join(changed) if changed else 'nothing')
           PY
           python3 /tmp/p.py
