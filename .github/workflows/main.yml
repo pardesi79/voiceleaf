@@ -5258,6 +5258,173 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Read legacy-font PDFs too
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          # The whole legacy table lives in this file, so the build never depends on
+          # anything being fetched or left over from an earlier step.
+          DART = """/// Legacy 8-bit Hindi fonts (Kruti Dev 010, DevLys 010, Walkman-Chanakya 905)\n/// store Devanagari in Latin slots, so a PDF written in one of them gives\n/// Latin gibberish. These rules turn those bytes back into Devanagari.\n/// The table comes from the MIT-licensed KrutiExtract project and was checked\n/// against its own font glyphs, then against a real NCERT chapter.\n\nconst List<List<String>> krutiPairs = <List<String>>[\n    ['=k', 'त्र'],\n    ['f=k', 'त्रि'],\n    ['¯d', 'किं'],\n    ['¯', 'क'],\n    ['ñ', '॰'],\n    ['Q+Z', 'QZ+'],\n    ['sas', 'sa'],\n    ['aa', 'a'],\n    [')Z', 'र्द्ध'],\n    ['ZZ', 'Z'],\n    ['å', '०'],\n    ['ƒ', '१'],\n    ['„', '२'],\n    ['…', '३'],\n    ['†', '४'],\n    ['‡', '५'],\n    ['ˆ', '६'],\n    ['‰', '७'],\n    ['Š', '८'],\n    ['‹', '९'],\n    ['¶+', 'फ़्'],\n    ['d+', 'क़'],\n    ['[+k', 'ख़'],\n    ['[+', 'ख़्'],\n    ['x+', 'ग़'],\n    ['T+', 'ज़्'],\n    ['t+', 'ज़'],\n    ['M+', 'ड़'],\n    ['<+', 'ढ़'],\n    ['Q+', 'फ़'],\n    [';+', 'य़'],\n    ['j+', 'ऱ'],\n    ['u+', 'ऩ'],\n    ['Ùk', 'त्त'],\n    ['Ù', 'त्त्'],\n    ['ä', 'क्त'],\n    ['–', 'दृ'],\n    ['—', 'कृ'],\n    ['é', 'न्न'],\n    ['™', 'न्न्'],\n    ['à', 'ह्न'],\n    ['á', 'ह्य'],\n    ['â', 'हृ'],\n    ['ã', 'ह्म'],\n    ['ºz', 'ह्र'],\n    ['º', 'ह्'],\n    ['í', 'द्द'],\n    ['{k', 'क्ष'],\n    ['{', 'क्ष्'],\n    ['=', 'त्र'],\n    ['«', 'त्र्'],\n    ['Nî', 'छ्य'],\n    ['Vî', 'ट्य'],\n    ['Bî', 'ठ्य'],\n    ['Mî', 'ड्य'],\n    ['<î', 'ढ्य'],\n    ['|', 'द्य'],\n    ['K', 'ज्ञ'],\n    ['}', 'द्व'],\n    ['J', 'श्र'],\n    ['Vª', 'ट्र'],\n    ['Mª', 'ड्र'],\n    ['<ªª', 'ढ्र'],\n    ['Nª', 'छ्र'],\n    ['Ø', 'क्र'],\n    ['Ý', 'फ्र'],\n    ['nzZ', 'र्द्र'],\n    ['æ', 'द्र'],\n    ['ç', 'प्र'],\n    ['Á', 'प्र'],\n    ['xz', 'ग्र'],\n    ['#', 'रु'],\n    [':', 'रू'],\n    ['v‚', 'ऑ'],\n    ['vks', 'ओ'],\n    ['vkS', 'औ'],\n    ['vk', 'आ'],\n    ['v', 'अ'],\n    ['b±', 'ईं'],\n    ['Ã', 'ई'],\n    ['bZ', 'ई'],\n    ['b', 'इ'],\n    ['m', 'उ'],\n    ['Å', 'ऊ'],\n    [',s', 'ऐ'],\n    [',', 'ए'],\n    ['_', 'ऋ'],\n    ['ô', 'क्क'],\n    ['d', 'क'],\n    ['Dk', 'क'],\n    ['D', 'क्'],\n    ['[k', 'ख'],\n    ['[', 'ख्'],\n    ['x', 'ग'],\n    ['Xk', 'ग'],\n    ['X', 'ग्'],\n    ['Ä', 'घ'],\n    ['?k', 'घ'],\n    ['?', 'घ्'],\n    ['³', 'ङ'],\n    ['pkS', 'चै'],\n    ['p', 'च'],\n    ['Pk', 'च'],\n    ['P', 'च्'],\n    ['N', 'छ'],\n    ['t', 'ज'],\n    ['Tk', 'ज'],\n    ['T', 'ज्'],\n    ['>', 'झ'],\n    ['÷', 'झ्'],\n    ['¥', 'ञ'],\n    ['ê', 'ट्ट'],\n    ['ë', 'ट्ठ'],\n    ['V', 'ट'],\n    ['B', 'ठ'],\n    ['ì', 'ड्ड'],\n    ['ï', 'ड्ढ'],\n    ['M+', 'ड़'],\n    ['<+', 'ढ़'],\n    ['M', 'ड'],\n    ['<', 'ढ'],\n    ['.k', 'ण'],\n    ['.', 'ण्'],\n    ['r', 'त'],\n    ['Rk', 'त'],\n    ['R', 'त्'],\n    ['Fk', 'थ'],\n    ['F', 'थ्'],\n    [')', 'द्ध'],\n    ['n', 'द'],\n    ['/k', 'ध'],\n    ['èk', 'ध'],\n    ['/', 'ध्'],\n    ['Ë', 'ध्'],\n    ['è', 'ध्'],\n    ['u', 'न'],\n    ['Uk', 'न'],\n    ['U', 'न्'],\n    ['i', 'प'],\n    ['Ik', 'प'],\n    ['I', 'प्'],\n    ['Q', 'फ'],\n    ['¶', 'फ्'],\n    ['c', 'ब'],\n    ['Ck', 'ब'],\n    ['C', 'ब्'],\n    ['Hk', 'भ'],\n    ['H', 'भ्'],\n    ['e', 'म'],\n    ['Ek', 'म'],\n    ['E', 'म्'],\n    [';', 'य'],\n    ['¸', 'य्'],\n    ['j', 'र'],\n    ['y', 'ल'],\n    ['Yk', 'ल'],\n    ['Y', 'ल्'],\n    ['G', 'ळ'],\n    ['o', 'व'],\n    ['Ok', 'व'],\n    ['O', 'व्'],\n    ['\\'k', 'श'],\n    ['\\'', 'श्'],\n    ['\"k', 'ष'],\n    ['\"', 'ष्'],\n    ['l', 'स'],\n    ['Lk', 'स'],\n    ['L', 'स्'],\n    ['g', 'ह'],\n    ['È', 'ीं'],\n    ['z', '्र'],\n    ['Ì', 'द्द'],\n    ['Í', 'ट्ट'],\n    ['Î', 'ट्ठ'],\n    ['Ï', 'स्त्र'],\n    ['Ñ', 'कृ'],\n    ['Ò', 'भ'],\n    ['Ó', '्य'],\n    ['Ô', 'ड्ढ'],\n    ['Ö', 'झ्'],\n    ['Ø', 'क्र'],\n    ['Ù', 'त्त्'],\n    ['Ük', 'श'],\n    ['Ü', 'श्'],\n    ['‚', 'ॉ'],\n    ['ks', 'ो'],\n    ['kS', 'ौ'],\n    ['k', 'ा'],\n    ['h', 'ी'],\n    ['q', 'ु'],\n    ['w', 'ू'],\n    ['`', 'ृ'],\n    ['s', 'े'],\n    ['S', 'ै'],\n    ['a', 'ं'],\n    ['¡', 'ँ'],\n    ['%', 'ः'],\n    ['W', 'ॅ'],\n    ['•', 'ऽ'],\n    ['·', 'ऽ'],\n    ['∙', 'ऽ'],\n    ['·', 'ऽ'],\n    ['~j', '्र'],\n    ['~', '्'],\n    ['\\\\', '?'],\n    ['+', '़'],\n    [' ः', ':'],\n    ['^', '\\''],\n    ['*', '\\''],\n    ['Þ', '\"'],\n    ['ß', '\"'],\n    ['(', ';'],\n    ['¼', '('],\n    ['½', ')'],\n    ['¿', '{'],\n    ['À', '}'],\n    ['¾', '='],\n    ['A', '।'],\n    ['-', '.'],\n    ['&', '-'],\n    ['&', 'µ'],\n    ['Œ', '॰'],\n    [']', ','],\n    ['~ ', '् '],\n    ['@', '/'],\n    ['µ', '—'],\n    ['f', 'ि'],\n    ['Z', 'र्'],\n];\n\nconst String _cons = '\\u0915-\\u0939\\u0958-\\u095F';\nconst String _marks = '\\u093e-\\u094c\\u094d';\n\n/// Walkman-Chanakya 905 writes two keys for one letter. Fold those first.\nString _walkmanPre(String t) {\n  t = t.replaceAll(RegExp(r'o([sSqwkah`\\u201a\\u00a1]{0,2})Q'), r'd$1');\n  t = t.replaceAll(RegExp(r'i([sSqwkah`\\u201a\\u00a1]{0,2})Q'), r'Q$1');\n  t = t.replaceAll('mQ', '\\u00c5');\n  return t;\n}\n\n/// Turn a run of legacy bytes into Devanagari.\nString legacyToUnicode(String input, {bool walkman = true}) {\n  var t = walkman ? _walkmanPre(input) : input;\n  for (final p in krutiPairs) {\n    if (p[0].isEmpty) continue;\n    t = t.replaceAll(p[0], p[1]);\n  }\n  // the i-matra is typed before its consonant but belongs after it\n  t = t.replaceAllMapped(\n      RegExp('\\u093f([$_cons])(\\u094d[$_cons])?'),\n      (m) => m[1]! + (m[2] ?? '') + '\\u093f');\n  // a reph typed at the end of a syllable belongs in front of the whole syllable\n  t = t.replaceAllMapped(\n      RegExp('([$_cons](?:[$_marks]|[$_cons])*?)\\u0930\\u094d'),\n      (m) => '\\u0930\\u094d${m[1]}');\n  return t;\n}\n\n/// How much of a page looks like Devanagari rather than Latin letters.\ndouble devanagariShare(String t) {\n  if (t.isEmpty) return 0;\n  var deva = 0;\n  var total = 0;\n  for (final r in t.runes) {\n    if (r == 0x20 || r == 0x0a || r == 0x0d || r == 0x09) continue;\n    total++;\n    if (r >= 0x0900 && r <= 0x097F) deva++;\n  }\n  return total == 0 ? 0 : deva / total;\n}\n"""
+
+          pathlib.Path('lib/legacy_fonts.dart').write_text(DART)
+          print('legacy_fonts.dart written,', len(DART), 'bytes')
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          changed = []
+
+          if "import 'legacy_fonts.dart';" not in s:
+              s = "import 'legacy_fonts.dart';\n" + s
+              changed.append('import added')
+
+          old = "    final whole = await _pdfTextLayer(path);"
+          new = """    var whole = await _pdfTextLayer(path);
+
+              // A legacy font PDF carries Devanagari in Latin slots: the letters look
+              // wrong but the words are all there, so they only need turning back.
+              if (!whole.startsWith('ERR') && whole.trim().length > 200 &&
+                  !whole.contains('\\u0000') && devanagariShare(whole) < 0.10) {
+                final turned = legacyToUnicode(whole);
+                if (devanagariShare(turned) > 0.50) whole = turned;
+              }"""
+          if old in s and 'legacyToUnicode' not in s:
+              s = s.replace(old, new, 1)
+              changed.append('the four kinds are told apart')
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Never mistake English for a legacy font
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          # ---------- 1. a detector that cannot mistake English for a legacy font ----------
+          detector = r'''
+
+          /// True only when the text really looks like a legacy 8-bit Hindi font.
+          /// A plain English page has no Devanagari either, so a percentage test alone
+          /// would wrongly push it through the Kruti Dev table and turn it to nonsense.
+          /// This looks for the words and letter pairs those fonts actually produce.
+          bool isLegacyHindiText(String t) {
+            final words = t.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+            if (words.length < 6) return false;
+            const markers = <String>{
+              'dks', 'ds', 'dh', 'dk', 'ls', 'es', 'esa', 'gS', 'gSa', 'vkSj',
+              'fd', 'ij', 'us', ';g', 'og', 'rFkk', 'ugha', 'fy,', 'fd;k', 'x;k',
+              'gks', 'Hkh', 'os', 'ge', 'vki', 'tks', 'rks', 'tc', 'rc', 'vc',
+              'D;k', 'D;ksafd', 'ysfdu', 'bl', 'ml', 'bu', 'mu', 'Fkk', 'Fkh', 'Fks'
+            };
+            var hits = 0;
+            for (final w in words) {
+              final clean = w.replaceAll(RegExp(r'^[.,A(]+|[.,A)]+$'), '');
+              if (markers.contains(clean)) hits++;
+            }
+            final glyphs = RegExp(
+                    r'(?:[a-zA-Z][;\[\]/\+\.`~][a-zA-Z]|f[dghjklmnprstvx]|ks|kS|\.[k]|\[k|\?k)')
+                .allMatches(t)
+                .length;
+            return (hits / words.length >= 0.06) || (glyphs / words.length >= 0.12);
+          }
+          '''
+
+          lf = pathlib.Path('lib/legacy_fonts.dart')
+          code = lf.read_text()
+          if 'isLegacyHindiText' not in code:
+              code += detector
+              lf.write_text(code)
+              print('legacy_fonts.dart: English-safe detector added')
+
+          # ---------- 2. use it, and let the reph move only one syllable ----------
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          changed = []
+
+          old_check = """    if (!whole.startsWith('ERR') && whole.trim().length > 200 &&
+                  !whole.contains('\\u0000') && devanagariShare(whole) < 0.10) {
+                final turned = legacyToUnicode(whole);
+                if (devanagariShare(turned) > 0.50) whole = turned;
+              }"""
+          new_check = """    if (!whole.startsWith('ERR') && whole.trim().length > 80 &&
+                  !whole.contains('\\u0000') && isLegacyHindiText(whole)) {
+                final turned = legacyToUnicode(whole);
+                if (devanagariShare(turned) > 0.50) whole = turned;
+              }"""
+          if old_check in s:
+              s = s.replace(old_check, new_check, 1)
+              changed.append('detector wired in')
+
+          # ---------- 3. a page number must not be split away from its page ----------
+          old_pn = "          pages.addAll(paginate(pageNumbers ? 'Page $i.\\n$text' : text));"
+          new_pn = """          final chunks = paginate(text);
+                    // The number belongs on the first chunk of its own page. Prepending
+                    // it before the split let it land in the middle of a reading page,
+                    // or be cut in half, which is what broke reading with numbers on.
+                    if (pageNumbers && chunks.isNotEmpty) {
+                      chunks[0] = 'Page $i.\\n${chunks[0]}';
+                    }
+                    pages.addAll(chunks);"""
+          if old_pn in s:
+              s = s.replace(old_pn, new_pn, 1)
+              changed.append('page numbers kept with their page')
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Keep the accurate reading when page numbers are on
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          changed = []
+
+          # The real bug: turning page numbers on skipped the whole weave, so the
+          # accurate reading was thrown away exactly when a reader asked for numbers.
+          old_add = "          pages.add(pageNumbers ? 'Page $i.\\n${text.trim()}' : text.trim());"
+          new_add = "          pages.add(text.trim());"
+          if old_add in s:
+              s = s.replace(old_add, new_add, 1)
+              changed.append('the page text is kept clean')
+
+          old_weave = """    if (!pageNumbers) {
+                try {
+                  return await _weavePages(path, from, to, pages);
+                } catch (_) {
+                  return pages;"""
+          new_weave = """    {
+                try {
+                  final woven = await _weavePages(path, from, to, pages);
+                  // The number is added only after the weave, so asking for it can
+                  // never cost the accurate reading.
+                  if (pageNumbers) {
+                    for (var k = 0; k < woven.length && k < pages.length; k++) {
+                      woven[k] = 'Page ${from + k}.\\n${woven[k]}';
+                    }
+                  }
+                  return woven;
+                } catch (_) {
+                  if (pageNumbers) {
+                    for (var k = 0; k < pages.length; k++) {
+                      pages[k] = 'Page ${from + k}.\\n${pages[k]}';
+                    }
+                  }
+                  return pages;"""
+          if old_weave in s:
+              s = s.replace(old_weave, new_weave, 1)
+              changed.append('the weave now runs even with page numbers on')
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
