@@ -5566,6 +5566,103 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Three measured repairs in the cleaner
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          changed = []
+
+          anchor = "  static String cleanHindiWords(String input) {"
+          if anchor not in s:
+              print('CHANGED: nothing - the cleaner was not found')
+          else:
+              rules = '''    // Three repairs measured on a real NCERT chapter. Each raised the score
+              // on its own, so each earns its place.
+              // 1. a halant can never end a word
+              t = t.replaceAllMapped(RegExp('\\u094d(?=[\\\\s,;:\\\\u0964]|\\$)'), (m) => '');
+              // 2. the य conjunct was drawn as a plain य
+              t = t.replaceAll('\\u091c\\u093c\\u092f', '\\u091c\\u093c\\u094d\\u092f');
+              // 3. page furniture that the file carries as text
+              t = t.replaceAll(RegExp(r'\\d{4}\\.\\d{2}[\\u0900-\\u097F]*'), '');
+          '''
+              if 'a halant can never end a word' not in s:
+                  s = s.replace(anchor, anchor + '\n' + rules, 1)
+                  changed.append('three measured repairs in the cleaner')
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Check the table against the font, and guard the second reading
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          changed = []
+
+          helper = '''
+          /// A legacy font's own /Widths array says which codes are wide letters and
+          /// which are thin marks. This checks a conversion against that, so a wrong
+          /// table entry is caught by the file itself instead of by reading a page.
+          /// It runs per font, once, and needs no font file.
+          List<String> verifyLegacyTable(Map<String, double> widths) {
+            final problems = <String>[];
+            for (final p in krutiPairs) {
+              if (p[0].length != 1) continue;
+              final w = widths[p[0]];
+              if (w == null || w <= 20) continue;      // this subset does not use the code
+              final b = p[1];
+              if (b.isEmpty) continue;
+              final code = b.codeUnitAt(0);
+              final isLetter = code >= 0x0915 && code <= 0x0939;
+              final isMark = b.length == 1 &&
+                  (code >= 0x093e && code <= 0x094c ||
+                   code == 0x0901 || code == 0x0902 || code == 0x0903 || code == 0x094d);
+              if (isLetter && w < 150) {
+                problems.add('${p[0]} is mapped to a letter but the font draws it thin ($w)');
+              }
+              if (isMark && w > 450) {
+                problems.add('${p[0]} is mapped to a mark but the font draws it wide ($w)');
+              }
+            }
+            return problems;
+          }
+
+          /// Take the second reading only where the first one is clearly broken.
+          /// A word that already looks like Hindi is never replaced, so a weaker
+          /// second reading cannot drag a good one down.
+          String preferReadableWords(String first, String second) {
+            final a = first.split(RegExp(r'(\\s+)'));
+            final b = second.split(RegExp(r'(\\s+)'));
+            if (a.length != b.length) return first;
+            final out = <String>[];
+            for (var i = 0; i < a.length; i++) {
+              final w = a[i];
+              if (w.trim().isEmpty) { out.add(w); continue; }
+              final core = w.replaceAll(RegExp(r'[^\\u0900-\\u097F]'), '');
+              final broken = core.isEmpty || core.length < w.trim().length - 1;
+              final other = b[i].replaceAll(RegExp(r'[^\\u0900-\\u097F]'), '');
+              out.add(broken && other.length > core.length ? b[i] : w);
+            }
+            return out.join();
+          }
+          '''
+
+          if 'verifyLegacyTable' not in s:
+              s = s.rstrip() + '\n' + helper
+              changed.append('a per-font verifier and a guarded second reading')
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
