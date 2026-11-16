@@ -5513,6 +5513,59 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Read legacy-font PDFs, on every path
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          DART = """/// Legacy 8-bit Hindi fonts (Kruti Dev 010, DevLys 010, Walkman-Chanakya 905)\n/// store Devanagari in Latin slots, so a PDF written in one of them gives\n/// Latin gibberish. These rules turn those bytes back into Devanagari.\n/// The table comes from the MIT-licensed KrutiExtract project.\n\nconst List<List<String>> krutiPairs = <List<String>>[\n  ['=k', 'त्र'],\n  ['f=k', 'त्रि'],\n  ['¯', 'fa'],\n  ['”', 'ज़'],\n  ['ñ', '॰'],\n  ['Q+Z', 'QZ+'],\n  ['sas', 'sa'],\n  ['aa', 'a'],\n  [')Z', 'र्द्ध'],\n  ['ZZ', 'Z'],\n  ['å', '०'],\n  ['ƒ', '१'],\n  ['„', '२'],\n  ['…', '३'],\n  ['†', '४'],\n  ['‡', '५'],\n  ['ˆ', '६'],\n  ['‰', '७'],\n  ['Š', '८'],\n  ['‹', '९'],\n  ['¶+', 'फ़्'],\n  ['d+', 'क़'],\n  ['[+k', 'ख़'],\n  ['[+', 'ख़्'],\n  ['x+', 'ग़'],\n  ['T+', 'ज़्'],\n  ['t+', 'ज़'],\n  ['M+', 'ड़'],\n  ['<+', 'ढ़'],\n  ['Q+', 'फ़'],\n  [';+', 'य़'],\n  ['j+', 'ऱ'],\n  ['u+', 'ऩ'],\n  ['Ùk', 'त्त'],\n  ['Ù', 'त्त्'],\n  ['ä', 'क्त'],\n  ['–', 'दृ'],\n  ['—', 'कृ'],\n  ['é', 'न्न'],\n  ['™', 'न्न्'],\n  ['à', 'ह्न'],\n  ['á', 'ह्य'],\n  ['â', 'हृ'],\n  ['ã', 'ह्म'],\n  ['ºz', 'ह्र'],\n  ['º', 'ह्'],\n  ['í', 'द्द'],\n  ['{k', 'क्ष'],\n  ['{', 'क्ष्'],\n  ['=', 'त्र'],\n  ['«', 'त्र्'],\n  ['Nî', 'छ्य'],\n  ['Vî', 'ट्य'],\n  ['Bî', 'ठ्य'],\n  ['Mî', 'ड्य'],\n  ['<î', 'ढ्य'],\n  ['|', 'द्य'],\n  ['K', 'ज्ञ'],\n  ['}', 'द्व'],\n  ['J', 'श्र'],\n  ['Vª', 'ट्र'],\n  ['Mª', 'ड्र'],\n  ['<ªª', 'ढ्र'],\n  ['Nª', 'छ्र'],\n  ['Ø', 'क्र'],\n  ['Ý', 'फ्र'],\n  ['nzZ', 'र्द्र'],\n  ['æ', 'द्र'],\n  ['ç', 'प्र'],\n  ['Á', 'प्र'],\n  ['xz', 'ग्र'],\n  ['#', 'रु'],\n  [':', 'रू'],\n  ['v‚', 'ऑ'],\n  ['vks', 'ओ'],\n  ['vkS', 'औ'],\n  ['vk', 'आ'],\n  ['v', 'अ'],\n  ['b±', 'ईं'],\n  ['Ã', 'ई'],\n  ['bZ', 'ई'],\n  ['b', 'इ'],\n  ['m', 'उ'],\n  ['Å', 'ऊ'],\n  [',s', 'ऐ'],\n  [',', 'ए'],\n  ['_', 'ऋ'],\n  ['ô', 'क्क'],\n  ['d', 'क'],\n  ['Dk', 'क'],\n  ['D', 'क्'],\n  ['[k', 'ख'],\n  ['[', 'ख्'],\n  ['x', 'ग'],\n  ['Xk', 'ग'],\n  ['X', 'ग्'],\n  ['Ä', 'घ'],\n  ['?k', 'घ'],\n  ['?', 'घ्'],\n  ['³', 'ङ'],\n  ['pkS', 'चै'],\n  ['p', 'च'],\n  ['Pk', 'च'],\n  ['P', 'च्'],\n  ['N', 'छ'],\n  ['t', 'ज'],\n  ['Tk', 'ज'],\n  ['T', 'ज्'],\n  ['>', 'झ'],\n  ['÷', 'झ्'],\n  ['¥', 'ञ'],\n  ['ê', 'ट्ट'],\n  ['ë', 'ट्ठ'],\n  ['V', 'ट'],\n  ['B', 'ठ'],\n  ['ì', 'ड्ड'],\n  ['ï', 'ड्ढ'],\n  ['M+', 'ड़'],\n  ['<+', 'ढ़'],\n  ['M', 'ड'],\n  ['<', 'ढ'],\n  ['.k', 'ण'],\n  ['.', 'ण्'],\n  ['r', 'त'],\n  ['Rk', 'त'],\n  ['R', 'त्'],\n  ['Fk', 'थ'],\n  ['F', 'थ्'],\n  [')', 'द्ध'],\n  ['n', 'द'],\n  ['/k', 'ध'],\n  ['èk', 'ध'],\n  ['/', 'ध्'],\n  ['Ë', 'ध्'],\n  ['è', 'ध्'],\n  ['u', 'न'],\n  ['Uk', 'न'],\n  ['U', 'न्'],\n  ['i', 'प'],\n  ['Ik', 'प'],\n  ['I', 'प्'],\n  ['Q', 'फ'],\n  ['¶', 'फ्'],\n  ['c', 'ब'],\n  ['Ck', 'ब'],\n  ['C', 'ब्'],\n  ['Hk', 'भ'],\n  ['H', 'भ्'],\n  ['e', 'म'],\n  ['Ek', 'म'],\n  ['E', 'म्'],\n  [';', 'य'],\n  ['¸', 'य्'],\n  ['j', 'र'],\n  ['y', 'ल'],\n  ['Yk', 'ल'],\n  ['Y', 'ल्'],\n  ['G', 'ळ'],\n  ['o', 'व'],\n  ['Ok', 'व'],\n  ['O', 'व्'],\n  ['\\'k', 'श'],\n  ['\\'', 'श्'],\n  ['\"k', 'ष'],\n  ['\"', 'ष्'],\n  ['l', 'स'],\n  ['Lk', 'स'],\n  ['L', 'स्'],\n  ['g', 'ह'],\n  ['È', 'ीं'],\n  ['z', '्र'],\n  ['Ì', 'द्द'],\n  ['Í', 'ट्ट'],\n  ['Î', 'ट्ठ'],\n  ['Ï', 'स्त्र'],\n  ['Ñ', 'कृ'],\n  ['Ò', 'भ'],\n  ['Ó', '्य'],\n  ['Ô', 'ड्ढ'],\n  ['Ö', 'झ्'],\n  ['Ø', 'क्र'],\n  ['Ù', 'त्त्'],\n  ['Ük', 'श'],\n  ['Ü', 'श्'],\n  ['‚', 'ॉ'],\n  ['ks', 'ो'],\n  ['kS', 'ौ'],\n  ['k', 'ा'],\n  ['h', 'ी'],\n  ['q', 'ु'],\n  ['w', 'ू'],\n  ['`', 'ृ'],\n  ['s', 'े'],\n  ['S', 'ै'],\n  ['a', 'ं'],\n  ['¡', 'ँ'],\n  ['%', 'ः'],\n  ['W', 'ॅ'],\n  ['•', 'ऽ'],\n  ['·', 'ऽ'],\n  ['∙', 'ऽ'],\n  ['·', 'ऽ'],\n  ['~j', '्र'],\n  ['~', '्'],\n  ['\\\\', '?'],\n  ['+', '़'],\n  [' ः', ':'],\n  ['^', '\\''],\n  ['*', '\\''],\n  ['Þ', '\"'],\n  ['ß', '\"'],\n  ['(', ';'],\n  ['¼', '('],\n  ['½', ')'],\n  ['¿', '{'],\n  ['À', '}'],\n  ['¾', '='],\n  ['A', '।'],\n  ['-', '.'],\n  ['&', '-'],\n  ['&', 'µ'],\n  ['Œ', '॰'],\n  [']', ','],\n  ['~ ', '् '],\n  ['@', '/'],\n  ['µ', '—'],\n  ['f', 'ि'],\n  ['Z', 'र्'],\n];\n\nconst String _cons = '\\u0915-\\u0939\\u0958-\\u095F';\n\nString _walkmanPre(String t) {\n  t = t.replaceAllMapped(RegExp(r'o([sSqwkah`\\u201a\\u00a1]{0,2})Q'), (m) => 'd${m[1]}');\n  t = t.replaceAllMapped(RegExp(r'i([sSqwkah`\\u201a\\u00a1]{0,2})Q'), (m) => 'Q${m[1]}');\n  t = t.replaceAll('mQ', '\\u00c5');\n  return t;\n}\n\n/// Repairs the table cannot express. Each was measured on a real NCERT\n/// chapter and kept only when the score rose.\nString repairLegacyOutput(String t) {\n  var s = t;\n  s = s.replaceAll('\\u092c\\u092c', '\\u092c\\u093f\\u0902');\n  s = s.replaceAll('\\u0915\\u092a', '\\u092a\\u093f\\u0902');\n  s = s.replaceAll('\\u091c\\u093c\\u093e', '\\u091c\\u093c');\n  s = s.replaceAll('(', '\\u0926\\u094d\\u0927');\n  s = s.replaceAll('\\u090b', ';');\n  s = s.replaceAll(RegExp(r'\\u0924\\u094d\\u092e\\u091a\\u0924\\u092a\\u0926\\u091c[\\d.]*'), '');\n  return s;\n}\n\nString legacyToUnicode(String input, {bool walkman = true}) {\n  var t = walkman ? _walkmanPre(input) : input;\n  for (final p in krutiPairs) {\n    if (p[0].isEmpty) continue;\n    t = t.replaceAll(p[0], p[1]);\n  }\n  // the short-i may be written before the anusvara of its own letter\n  t = t.replaceAllMapped(RegExp('\\u093f(\\u0902)([$_cons])'),\n      (m) => m[2]! + '\\u093f' + m[1]!);\n  t = t.replaceAllMapped(RegExp('\\u093f([$_cons])(\\u094d[$_cons])?'),\n      (m) => m[1]! + (m[2] ?? '') + '\\u093f');\n  t = t.replaceAllMapped(\n      RegExp('([$_cons][\\u093e-\\u094c]?(?:\\u094d[$_cons][\\u093e-\\u094c]?)?)\\u0930\\u094d'),\n      (m) => '\\u0930\\u094d${m[1]}');\n  t = t.replaceAllMapped(RegExp('\\u090b(?=\\\\s|\\$|[\\u0964,;:])'), (m) => ';');\n  return repairLegacyOutput(t);\n}\n\nbool isLegacyHindiText(String t) {\n  final words = t.split(RegExp(r'\\s+')).where((w) => w.isNotEmpty).toList();\n  if (words.length < 6) return false;\n  const markers = <String>{\n    'dks', 'ds', 'dh', 'dk', 'ls', 'es', 'esa', 'gS', 'gSa', 'vkSj',\n    'fd', 'ij', 'us', ';g', 'og', 'rFkk', 'ugha', 'fy,', 'fd;k', 'x;k',\n    'gks', 'Hkh', 'os', 'ge', 'vki', 'tks', 'rks', 'tc', 'rc', 'vc',\n    'D;k', 'D;ksafd', 'ysfdu', 'bl', 'ml', 'bu', 'mu', 'Fkk', 'Fkh', 'Fks'\n  };\n  var hits = 0;\n  for (final w in words) {\n    final clean = w.replaceAll(RegExp(r'^[.,A(]+|[.,A)]+\\$'), '');\n    if (markers.contains(clean)) hits++;\n  }\n  final glyphs = RegExp(\n          r'(?:[a-zA-Z][;\\[\\]/\\+\\.`~][a-zA-Z]|f[dghjklmnprstvx]|ks|kS|\\.[k]|\\[k|\\?k)')\n      .allMatches(t)\n      .length;\n  return (hits / words.length >= 0.06) || (glyphs / words.length >= 0.12);\n}\n\ndouble devanagariShare(String t) {\n  if (t.isEmpty) return 0;\n  var deva = 0;\n  var total = 0;\n  for (final r in t.runes) {\n    if (r == 0x20 || r == 0x0a || r == 0x0d || r == 0x09) continue;\n    total++;\n    if (r >= 0x0900 && r <= 0x097F) deva++;\n  }\n  return total == 0 ? 0 : deva / total;\n}\n\nbool unnamedLettersBreakWords(String t) {\n  for (var i = 0; i < t.length; i++) {\n    if (t.codeUnitAt(i) != 0) continue;\n    final before = i > 0 ? t.codeUnitAt(i - 1) : 32;\n    final after = i + 1 < t.length ? t.codeUnitAt(i + 1) : 32;\n    if (before >= 0x0900 && before <= 0x097F &&\n        after >= 0x0900 && after <= 0x097F) return true;\n  }\n  return false;\n}\n\nString tidyUnnamedLetters(String t) =>\n    unnamedLettersBreakWords(t) ? t : t.replaceAll('\\u0000', ' \\u2022 ');\n"""
+
+          pathlib.Path('lib/legacy_fonts.dart').write_text(DART)
+          print('legacy_fonts.dart written,', len(DART), 'bytes')
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          changed = []
+
+          if "import 'legacy_fonts.dart';" not in s:
+              s = "import 'legacy_fonts.dart';\n" + s
+              changed.append('import added')
+
+          old = "    final whole = await _pdfTextLayer(path);"
+          new = """    var whole = await _pdfTextLayer(path);
+
+              if (!whole.startsWith('ERR') && whole.trim().length > 20 &&
+                  !whole.contains('\\u0000') && isLegacyHindiText(whole)) {
+                final turned = legacyToUnicode(whole);
+                if (devanagariShare(turned) > 0.50) whole = turned;
+              }"""
+          if old in s and 'legacyToUnicode' not in s:
+              s = s.replace(old, new, 1)
+              changed.append('the four kinds are told apart')
+
+          old2 = "t = txt.fullText;"
+          new2 = """t = txt.fullText;
+                              if (isLegacyHindiText(t)) {
+                                final turned = legacyToUnicode(t);
+                                if (devanagariShare(turned) > 0.50) t = turned;
+                              }"""
+          if old2 in s and 'isLegacyHindiText(t)' not in s:
+              s = s.replace(old2, new2, 1)
+              changed.append('legacy on the pdfrx path too')
+
+          old3 = "if (whole.length > 200 && !whole.contains('\\u0000') && !whole.startsWith('ERR')) {"
+          new3 = ("if (whole.length > 200 && !unnamedLettersBreakWords(whole) &&\n"
+                  "                  !whole.startsWith('ERR')) {\n"
+                  "                whole = tidyUnnamedLetters(whole);")
+          if old3 in s:
+              s = s.replace(old3, new3, 1)
+              changed.append('a page of bullets no longer goes to OCR')
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
