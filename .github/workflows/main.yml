@@ -5680,6 +5680,30 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Send the legacy reading through the cleaner
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+          changed = []
+
+          # The legacy reading was never sent through the cleaner, so the repairs it
+          # holds never reached a legacy page. One change fixes that.
+          old = """      final turned = legacyToUnicode(whole);
+                if (devanagariShare(turned) > 0.50) whole = turned;"""
+          new = """      final turned = legacyToUnicode(whole);
+                if (devanagariShare(turned) > 0.50) whole = cleanHindiWords(turned);"""
+          if old in s:
+              s = s.replace(old, new, 1)
+              ex.write_text(s)
+              changed.append('the legacy reading now goes through the cleaner')
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
