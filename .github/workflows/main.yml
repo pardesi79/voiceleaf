@@ -6039,7 +6039,7 @@ jobs:
                                                         val engines = tEngine.engines.map {
                                                             mapOf("name" to it.name, "label" to it.label)
                                                         }
-                                                        val voices = mutableListOf>()
+                                                        val voices = mutableListOf<Map<String, String>>()
                                                         try {
                                                             for (v in tEngine.voices ?: emptySet()) {
                                                                 val loc = v.locale
