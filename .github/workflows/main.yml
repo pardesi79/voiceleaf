@@ -5920,169 +5920,168 @@ jobs:
           cat > /tmp/p.py <<'PY'
           import pathlib
 
-          KT = """// Native channel for:
-                            // 1. Multi-page Unicode PDF creation (supports Hindi/Devanagari, Latin, CJK via Android StaticLayout)
-                            // 2. Saving exported files directly to the public Downloads folder
-                            // 3. Querying all installed TTS engines and all voices per engine + language
-                            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/features")
-                                .setMethodCallHandler { call, result ->
-                                    when (call.method) {
-                                        "createPdf" -> {
-                                            val title = call.argument<String>("title") ?: "Document"
-                                            val pages = call.argument<List<String>>("pages") ?: emptyList()
-                                            val outPath = call.argument<String>("outPath")
-                                            if (outPath == null) {
-                                                result.error("NOPATH", "No output path provided", null)
-                                                return@setMethodCallHandler
-                                            }
-                                            Thread {
-                                                try {
-                                                    val pdf = android.graphics.pdf.PdfDocument()
-                                                    val paint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                                                        color = android.graphics.Color.BLACK
-                                                        textSize = 12.5f
-                                                    }
-                                                    val pageWidth = 595
-                                                    val pageHeight = 842
-                                                    val margin = 44
-                                                    val contentWidth = pageWidth - margin * 2
-                                                    val contentHeight = pageHeight - margin * 2
-                                                    var pageNum = 1
-                                                    val allPages = if (pages.isEmpty()) listOf(title) else pages
-                                                    for (rawPage in allPages) {
-                                                        val text = rawPage.trim()
-                                                        if (text.isEmpty()) continue
-                                                        val layout = android.text.StaticLayout.Builder
-                                                            .obtain(text, 0, text.length, paint, contentWidth)
-                                                            .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL)
-                                                            .setLineSpacing(4.0f, 1.15f)
-                                                            .setIncludePad(true)
-                                                            .build()
-                                                        var lineIdx = 0
-                                                        val totalLines = layout.lineCount
-                                                        while (lineIdx < totalLines) {
-                                                            val pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNum++).create()
-                                                            val pdfPage = pdf.startPage(pageInfo)
-                                                            val canvas = pdfPage.canvas
-                                                            canvas.save()
-                                                            val startTop = layout.getLineTop(lineIdx)
-                                                            var endLine = lineIdx
-                                                            while (endLine + 1 < totalLines &&
-                                                                   (layout.getLineBottom(endLine + 1) - startTop) <= contentHeight) {
-                                                                endLine++
-                                                            }
-                                                            val sliceHeight = layout.getLineBottom(endLine) - startTop
-                                                            canvas.translate(margin.toFloat(), margin.toFloat() - startTop.toFloat())
-                                                            canvas.clipRect(0, startTop, contentWidth, startTop + sliceHeight)
-                                                            layout.draw(canvas)
-                                                            canvas.restore()
-                                                            pdf.finishPage(pdfPage)
-                                                            lineIdx = endLine + 1
-                                                        }
-                                                    }
-                                                    val file = java.io.File(outPath)
-                                                    file.parentFile?.mkdirs()
-                                                    file.outputStream().use { pdf.writeTo(it) }
-                                                    pdf.close()
-                                                    runOnUiThread { result.success(file.absolutePath) }
-                                                } catch (e: Throwable) {
-                                                    runOnUiThread { result.error("PDF_ERR", e.message, null) }
-                                                }
-                                            }.start()
-                                        }
-                                        "saveToDownloads" -> {
-                                            val srcPath = call.argument<String>("path")
-                                            val fileName = call.argument<String>("name") ?: "document.pdf"
-                                            val mime = call.argument<String>("mime") ?: "application/pdf"
-                                            if (srcPath == null) {
-                                                result.error("NOPATH", "No source path", null)
-                                                return@setMethodCallHandler
-                                            }
-                                            try {
-                                                val srcFile = java.io.File(srcPath)
-                                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                                                    val values = android.content.ContentValues().apply {
-                                                        put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
-                                                        put(android.provider.MediaStore.Downloads.MIME_TYPE, mime)
-                                                        put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
-                                                    }
-                                                    val resolver = applicationContext.contentResolver
-                                                    val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                                                    if (uri != null) {
-                                                        resolver.openOutputStream(uri)?.use { out ->
-                                                            srcFile.inputStream().use { inp -> inp.copyTo(out) }
-                                                        }
-                                                        values.clear()
-                                                        values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
-                                                        resolver.update(uri, values, null, null)
-                                                        result.success("Saved to Downloads: $fileName")
-                                                        return@setMethodCallHandler
-                                                    }
-                                                }
-                                                @Suppress("DEPRECATION")
-                                                val dlDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-                                                dlDir.mkdirs()
-                                                val dst = java.io.File(dlDir, fileName)
-                                                srcFile.copyTo(dst, overwrite = true)
-                                                result.success("Saved to Downloads: ${dst.absolutePath}")
-                                            } catch (e: Throwable) {
-                                                result.error("SAVE_ERR", e.message, null)
-                                            }
-                                        }
-                                        "getTtsCatalog" -> {
-                                            val reqEngine = call.argument<String>("engine") ?: ""
-                                            var probeTts: android.speech.tts.TextToSpeech? = null
-                                            val listener = android.speech.tts.TextToSpeech.OnInitListener { status ->
-                                                try {
-                                                    val tEngine = probeTts
-                                                    if (status == android.speech.tts.TextToSpeech.SUCCESS && tEngine != null) {
-                                                        val engines = tEngine.engines.map {
-                                                            mapOf("name" to it.name, "label" to it.label)
-                                                        }
-                                                        val voices = mutableListOf<Map<String, String>>()
-                                                        try {
-                                                            for (v in tEngine.voices ?: emptySet()) {
-                                                                val loc = v.locale
-                                                                if (loc != null) {
-                                                                    voices.add(mapOf(
-                                                                        "name" to v.name,
-                                                                        "locale" to loc.toLanguageTag(),
-                                                                        "langName" to loc.getDisplayLanguage(java.util.Locale.ENGLISH),
-                                                                        "countryName" to loc.getDisplayCountry(java.util.Locale.ENGLISH),
-                                                                        "displayName" to loc.getDisplayName(java.util.Locale.ENGLISH),
-                                                                        "network" to v.isNetworkConnectionRequired,
-                                                                        "quality" to v.quality
-                                                                    ))
-                                                                }
-                                                            }
-                                                        } catch (_: Throwable) {}
-                                                        val defEng = tEngine.defaultEngine ?: ""
-                                                        runOnUiThread {
-                                                            result.success(mapOf(
-                                                                "defaultEngine" to defEng,
-                                                                "engines" to engines,
-                                                                "voices" to voices
-                                                            ))
-                                                        }
-                                                    } else {
-                                                        runOnUiThread {
-                                                            result.success(mapOf("defaultEngine" to "", "engines" to emptyList<Any>(), "voices" to emptyList<Any>()))
-                                                        }
-                                                    }
-                                                } finally {
-                                                    try { probeTts?.shutdown() } catch (_: Throwable) {}
-                                                }
-                                            }
-                                            probeTts = if (reqEngine.isNotEmpty()) {
-                                                android.speech.tts.TextToSpeech(applicationContext, listener, reqEngine)
-                                            } else {
-                                                android.speech.tts.TextToSpeech(applicationContext, listener)
-                                            }
-                                        }
-                                        else -> result.notImplemented()
-                                    }
-                                }
-                    '''
+          KT = """          // Native channel for:
+                  // 1. Multi-page Unicode PDF creation (supports Hindi/Devanagari, Latin, CJK via Android StaticLayout)
+                  // 2. Saving exported files directly to the public Downloads folder
+                  // 3. Querying all installed TTS engines and all voices per engine + language
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/features")
+                      .setMethodCallHandler { call, result ->
+                          when (call.method) {
+                              "createPdf" -> {
+                                  val title = call.argument<String>("title") ?: "Document"
+                                  val pages = call.argument<List<String>>("pages") ?: emptyList()
+                                  val outPath = call.argument<String>("outPath")
+                                  if (outPath == null) {
+                                      result.error("NOPATH", "No output path provided", null)
+                                      return@setMethodCallHandler
+                                  }
+                                  Thread {
+                                      try {
+                                          val pdf = android.graphics.pdf.PdfDocument()
+                                          val paint = android.text.TextPaint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                                              color = android.graphics.Color.BLACK
+                                              textSize = 12.5f
+                                          }
+                                          val pageWidth = 595
+                                          val pageHeight = 842
+                                          val margin = 44
+                                          val contentWidth = pageWidth - margin * 2
+                                          val contentHeight = pageHeight - margin * 2
+                                          var pageNum = 1
+                                          val allPages = if (pages.isEmpty()) listOf(title) else pages
+                                          for (rawPage in allPages) {
+                                              val text = rawPage.trim()
+                                              if (text.isEmpty()) continue
+                                              val layout = android.text.StaticLayout.Builder
+                                                  .obtain(text, 0, text.length, paint, contentWidth)
+                                                  .setAlignment(android.text.Layout.Alignment.ALIGN_NORMAL)
+                                                  .setLineSpacing(4.0f, 1.15f)
+                                                  .setIncludePad(true)
+                                                  .build()
+                                              var lineIdx = 0
+                                              val totalLines = layout.lineCount
+                                              while (lineIdx < totalLines) {
+                                                  val pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNum++).create()
+                                                  val pdfPage = pdf.startPage(pageInfo)
+                                                  val canvas = pdfPage.canvas
+                                                  canvas.save()
+                                                  val startTop = layout.getLineTop(lineIdx)
+                                                  var endLine = lineIdx
+                                                  while (endLine + 1 < totalLines &&
+                                                         (layout.getLineBottom(endLine + 1) - startTop) <= contentHeight) {
+                                                      endLine++
+                                                  }
+                                                  val sliceHeight = layout.getLineBottom(endLine) - startTop
+                                                  canvas.translate(margin.toFloat(), margin.toFloat() - startTop.toFloat())
+                                                  canvas.clipRect(0, startTop, contentWidth, startTop + sliceHeight)
+                                                  layout.draw(canvas)
+                                                  canvas.restore()
+                                                  pdf.finishPage(pdfPage)
+                                                  lineIdx = endLine + 1
+                                              }
+                                          }
+                                          val file = java.io.File(outPath)
+                                          file.parentFile?.mkdirs()
+                                          file.outputStream().use { pdf.writeTo(it) }
+                                          pdf.close()
+                                          runOnUiThread { result.success(file.absolutePath) }
+                                      } catch (e: Throwable) {
+                                          runOnUiThread { result.error("PDF_ERR", e.message, null) }
+                                      }
+                                  }.start()
+                              }
+                              "saveToDownloads" -> {
+                                  val srcPath = call.argument<String>("path")
+                                  val fileName = call.argument<String>("name") ?: "document.pdf"
+                                  val mime = call.argument<String>("mime") ?: "application/pdf"
+                                  if (srcPath == null) {
+                                      result.error("NOPATH", "No source path", null)
+                                      return@setMethodCallHandler
+                                  }
+                                  try {
+                                      val srcFile = java.io.File(srcPath)
+                                      if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                                          val values = android.content.ContentValues().apply {
+                                              put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+                                              put(android.provider.MediaStore.Downloads.MIME_TYPE, mime)
+                                              put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+                                          }
+                                          val resolver = applicationContext.contentResolver
+                                          val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                                          if (uri != null) {
+                                              resolver.openOutputStream(uri)?.use { out ->
+                                                  srcFile.inputStream().use { inp -> inp.copyTo(out) }
+                                              }
+                                              values.clear()
+                                              values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                                              resolver.update(uri, values, null, null)
+                                              result.success("Saved to Downloads: $fileName")
+                                              return@setMethodCallHandler
+                                          }
+                                      }
+                                      @Suppress("DEPRECATION")
+                                      val dlDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                                      dlDir.mkdirs()
+                                      val dst = java.io.File(dlDir, fileName)
+                                      srcFile.copyTo(dst, overwrite = true)
+                                      result.success("Saved to Downloads: ${dst.absolutePath}")
+                                  } catch (e: Throwable) {
+                                      result.error("SAVE_ERR", e.message, null)
+                                  }
+                              }
+                              "getTtsCatalog" -> {
+                                  val reqEngine = call.argument<String>("engine") ?: ""
+                                  var probeTts: android.speech.tts.TextToSpeech? = null
+                                  val listener = android.speech.tts.TextToSpeech.OnInitListener { status ->
+                                      try {
+                                          val tEngine = probeTts
+                                          if (status == android.speech.tts.TextToSpeech.SUCCESS && tEngine != null) {
+                                              val engines = tEngine.engines.map {
+                                                  mapOf("name" to it.name, "label" to it.label)
+                                              }
+                                              val voices = mutableListOf<Map<String, Any>>()
+                                              try {
+                                                  for (v in tEngine.voices ?: emptySet()) {
+                                                      val loc = v.locale
+                                                      if (loc != null) {
+                                                          voices.add(mapOf(
+                                                              "name" to v.name,
+                                                              "locale" to loc.toLanguageTag(),
+                                                              "langName" to loc.getDisplayLanguage(java.util.Locale.ENGLISH),
+                                                              "countryName" to loc.getDisplayCountry(java.util.Locale.ENGLISH),
+                                                              "displayName" to loc.getDisplayName(java.util.Locale.ENGLISH),
+                                                              "network" to v.isNetworkConnectionRequired,
+                                                              "quality" to v.quality
+                                                          ))
+                                                      }
+                                                  }
+                                              } catch (_: Throwable) {}
+                                              val defEng = tEngine.defaultEngine ?: ""
+                                              runOnUiThread {
+                                                  result.success(mapOf(
+                                                      "defaultEngine" to defEng,
+                                                      "engines" to engines,
+                                                      "voices" to voices
+                                                  ))
+                                              }
+                                          } else {
+                                              runOnUiThread {
+                                                  result.success(mapOf("defaultEngine" to "", "engines" to emptyList<Any>(), "voices" to emptyList<Any>()))
+                                              }
+                                          }
+                                      } finally {
+                                          try { probeTts?.shutdown() } catch (_: Throwable) {}
+                                      }
+                                  }
+                                  probeTts = if (reqEngine.isNotEmpty()) {
+                                      android.speech.tts.TextToSpeech(applicationContext, listener, reqEngine)
+                                  } else {
+                                      android.speech.tts.TextToSpeech(applicationContext, listener)
+                                  }
+                              }
+                              else -> result.notImplemented()
+                          }
+                      }
                             anchor = '        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/ocr")'
                             if anchor in t:
                                 t = t.replace(anchor, feature_channel + '\\n' + anchor, 1)
