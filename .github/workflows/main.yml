@@ -5923,7 +5923,7 @@ jobs:
           D4 = """static const MethodChannel _featCh = MethodChannel('voiceleaf/features');
 
             /// Generates a real multi-page Unicode A4 PDF file from [book] using Android's native PdfDocument.
-            static Future<File> toPdfFile(Book book) async {
+            Future<File> toPdfFile(Book book) async {
               final dir = await getTemporaryDirectory();
               final safe = book.title.replaceAll(RegExp(r'[\\\\/:*?"<>|]'), '_').trim();
               final name = safe.isEmpty ? 'voiceleaf_book' : safe;
@@ -5937,7 +5937,7 @@ jobs:
             }
 
             /// Saves a generated PDF or any exported file directly into the phone's Downloads folder.
-            static Future<String> savePdfToDownloads(Book book) async {
+            Future<String> savePdfToDownloads(Book book) async {
               final f = await toPdfFile(book);
               final safe = book.title.replaceAll(RegExp(r'[\\\\/:*?"<>|]'), '_').trim();
               final name = '${safe.isEmpty ? "voiceleaf_book" : safe}.pdf';
@@ -5949,7 +5949,6 @@ jobs:
               Sounds.play('complete');
               return msg ?? 'Saved $name';
             }
-          '''
               if 'toPdfFile' not in es:
                   idx_cls = es.find('class Exporter')
                   if idx_cls >= 0:
@@ -6005,7 +6004,7 @@ jobs:
           }
 
           class _CascadingTtsSelectorState extends State<CascadingTtsSelector> {
-            static const MethodChannel _ch = MethodChannel('voiceleaf/features');
+            const MethodChannel _ch = MethodChannel('voiceleaf/features');
             bool _loading = true;
             List<Map<String, String>> _engines = [];
             List<Map<String, String>> _voices = [];
@@ -6207,7 +6206,6 @@ jobs:
               );
             }
           }
-          '''
           pp_pref = pathlib.Path('lib/preferences_page.dart')
           if pp_pref.exists():
               ps = pp_pref.read_text()
