@@ -6177,6 +6177,30 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Give every page its own boundary
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          # PDFTextStripper joins every page into one string, so the reader saw a single
+          # page: the next button had nowhere to go, and repeat/rewind had no page to
+          # work inside. Ending each page with a form feed lets the reader's own split
+          # find the boundaries.
+          changed = []
+          for kt in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              t = kt.read_text()
+              if 'pageEnd = "\\u000c"' in t:
+                  continue
+              old = 'dropThreshold = 2.5f'
+              if old in t:
+                  t = t.replace(old, old + '\n                            // one form feed per page, so the reader can split\n                            pageEnd = "\\u000c"', 1)
+                  kt.write_text(t)
+                  changed.append('each page now ends with a form feed')
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
