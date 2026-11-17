@@ -5915,6 +5915,92 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: His page sound, if he dropped one in
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, shutil, subprocess
+
+          # One file from him replaces the page sounds. He drops it in the repo root
+          # as pageSound.mp3 (or .wav) and the build puts it in all three places.
+          targets = ['snd_page_next.wav', 'snd_page_prev.wav', 'snd_pageflip.wav']
+          found = None
+          for name in ('pageSound.mp3', 'pageSound.wav', 'pageSound.m4a', 'pageSound.ogg'):
+              p = pathlib.Path(name)
+              if p.exists():
+                  found = p
+                  break
+
+          if found is None:
+              print('no pageSound file in the repo - the generated page sounds stay')
+          else:
+              made = 0
+              for t in targets:
+                  out = pathlib.Path('assets') / t
+                  out.parent.mkdir(exist_ok=True)
+                  try:
+                      # GitHub runners carry ffmpeg, so any format becomes the wav the app plays
+                      r = subprocess.run(
+                          ['ffmpeg', '-y', '-i', str(found), '-ar', '44100', '-ac', '1', str(out)],
+                          capture_output=True)
+                      if r.returncode == 0:
+                          made += 1
+                  except FileNotFoundError:
+                      break
+              if made == 0:
+                  # no ffmpeg: only a wav can be copied straight across
+                  if found.suffix.lower() == '.wav':
+                      for t in targets:
+                          shutil.copy(found, pathlib.Path('assets') / t)
+                          made += 1
+              print('page sound applied to', made, 'of', len(targets), 'files from', found.name)
+          PY
+          python3 /tmp/p.py
+
+      - name: Stop the processing sound on every path
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          # The processing loop started in initState and only stopped in dispose.
+          # If _go() threw - which is what happens on a PDF that never gets processed -
+          # the screen stayed open and the loop played forever. Stop it in a finally,
+          # so every path out of the work silences it.
+          p = pathlib.Path('lib/create_flow.dart')
+          s = p.read_text()
+          changed = []
+
+          old = "    WidgetsBinding.instance.addPostFrameCallback((_) => _go());"
+          new = "    WidgetsBinding.instance.addPostFrameCallback((_) => _goSafely());"
+          if old in s and '_goSafely' not in s:
+              s = s.replace(old, new, 1)
+              changed.append('the work now runs inside a guard')
+
+          # add the guard right after the class opening brace
+          if '_goSafely' in s and 'Future<void> _goSafely()' not in s:
+              anchor = s.find('class _CreateFlowState')
+              brace = s.find('{', anchor)
+              guard = '''
+
+            /// Runs the work and silences the processing sound whatever happens.
+            /// Without this a page that never finishes leaves the loop playing.
+            Future<void> _goSafely() async {
+              try {
+                await _go();
+              } catch (_) {
+                // a page that cannot be read still has to stop the sound
+              } finally {
+                Sounds.stopLoop();
+              }
+            }
+          '''
+              s = s[:brace+1] + guard + s[brace+1:]
+              changed.append('a guard that always stops the loop')
+
+          p.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
