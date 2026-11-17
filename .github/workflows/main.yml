@@ -5950,10 +5950,6 @@ jobs:
           cat > /tmp/p.py <<'PY'
           import pathlib
 
-          # The processing loop started in initState and only stopped in dispose.
-          # If _go() threw - which is what happens on a PDF that never gets processed -
-          # the screen stayed open and the loop played forever. Stop it in a finally,
-          # so every path out of the work silences it.
           p = pathlib.Path('lib/create_flow.dart')
           s = p.read_text()
           changed = []
@@ -5964,26 +5960,28 @@ jobs:
               s = s.replace(old, new, 1)
               changed.append('the work now runs inside a guard')
 
-          # add the guard right after the class opening brace
-          if '_goSafely' in s and 'Future<void> _goSafely()' not in s:
-              anchor = s.find('class _CreateFlowState')
+          # The real class is _ProcessingPageState. If it is not found, do nothing at
+          # all - inserting at the first brace put the code above the imports and Dart
+          # refused the whole file.
+          name = 'class _ProcessingPageState'
+          if '_goSafely' in s and 'Future<void> _goSafely()' not in s and name in s:
+              anchor = s.find(name)
               brace = s.find('{', anchor)
-              guard = '''
+              if brace > anchor:
+                  guard = '''
 
-            /// Runs the work and silences the processing sound whatever happens.
-            /// Without this a page that never finishes leaves the loop playing.
             Future<void> _goSafely() async {
               try {
                 await _go();
               } catch (_) {
                 // a page that cannot be read still has to stop the sound
               } finally {
-                Sounds.stopLoop();
+                Sounds.stopAll();
               }
             }
           '''
-              s = s[:brace+1] + guard + s[brace+1:]
-              changed.append('a guard that always stops the loop')
+                  s = s[:brace+1] + guard + s[brace+1:]
+                  changed.append('a guard that always stops the sound')
 
           p.write_text(s)
           print('CHANGED:', ', '.join(changed) if changed else 'nothing')
@@ -6053,55 +6051,51 @@ jobs:
       - name: Never let a sound outlive its screen
         run: |
           cat > /tmp/p.py <<'PY'
-          import pathlib, re
+          import pathlib
 
           changed = []
 
-          # The loop had no way out except dispose(). If that screen stayed, or the app
-          # was left, it played forever - and it kept the audio session busy, which is
-          # why the reading voice and every player button went dead. Give the loop a
-          # watchdog and a stop that works from anywhere.
+          # The loop had no way out except dispose(), so it played forever and held the
+          # audio session - which is why the reading voice and every player button went
+          # dead. Give it a watchdog, and a stop that works from anywhere.
           w = pathlib.Path('lib/widgets.dart')
           s = w.read_text()
 
-          old_loop = """  static Future<void> loop(String name) async {
-              try {
-                await _init();
-                await _loop.stop();
-                await _loop.setReleaseMode(ReleaseMode.loop);
-                await _loop.play(AssetSource('snd_$name.wav'), volume: 0.55);
-              } catch (_) {}
-            }"""
-          new_loop = """  static Timer? _watchdog;
+          if 'static Timer? _watchdog;' not in s:
+              old_loop = "  static Future<void> loop(String name) async {"
+              new_loop = """  static Timer? _watchdog;
 
-            static Future<void> loop(String name) async {
-              try {
-                await _init();
-                await _loop.stop();
-                await _loop.setReleaseMode(ReleaseMode.loop);
-                await _loop.play(AssetSource('snd_$name.wav'), volume: 0.55);
+            static Future<void> loop(String name) async {"""
+              if old_loop in s:
+                  s = s.replace(old_loop, new_loop, 1)
+                  changed.append('the loop gets a watchdog field')
+
+          if 'Timer(const Duration(seconds: 90)' not in s:
+              # anchor on the end of loop(), whatever the play line looks like by now
+              i = s.find('static Future<void> loop(String name) async {')
+              if i > 0:
+                  j = s.find('\n  }', i)
+                  if j > i:
+                      ins = """
                 // a loop with no end is a bug, so it ends itself
                 _watchdog?.cancel();
                 _watchdog = Timer(const Duration(seconds: 90), () {
                   stopAll();
-                });
-              } catch (_) {}
-            }"""
-          if old_loop in s:
-              s = s.replace(old_loop, new_loop, 1)
-              changed.append('the loop now stops itself after 90 seconds')
+                });"""
+                      s = s[:j] + ins + s[j:]
+                      changed.append('the loop stops itself after 90 seconds')
 
-          old_stop = """  static Future<void> stopLoop() async {
+          if 'static Future<void> stopAll()' not in s:
+              old_stop = """  static Future<void> stopLoop() async {
               try {
                 await _loop.stop();
               } catch (_) {}
             }"""
-          new_stop = """  static Future<void> stopLoop() async {
+              new_stop = """  static Future<void> stopLoop() async {
               _watchdog?.cancel();
               _watchdog = null;
               try {
                 await _loop.stop();
-                await _loop.setReleaseMode(ReleaseMode.release);
               } catch (_) {}
             }
 
@@ -6115,26 +6109,25 @@ jobs:
                 await _loop.setReleaseMode(ReleaseMode.release);
               } catch (_) {}
             }"""
-          if old_stop in s:
-              s = s.replace(old_stop, new_stop, 1)
-              changed.append('a stopAll that silences both players')
+              if old_stop in s:
+                  s = s.replace(old_stop, new_stop, 1)
+                  changed.append('a stopAll that silences both players')
 
-          if 'import \'dart:async\';' not in s:
+          if "import 'dart:async';" not in s:
               s = "import 'dart:async';\n" + s
               changed.append('the timer import')
 
           w.write_text(s)
 
-          # the app silences the loop when it leaves the screen, whatever screen it was
+          # leaving the app must never leave a sound running
           m = pathlib.Path('lib/main.dart')
           t = m.read_text()
-          if 'Sounds.stopAll()' not in t:
+          if 'didChangeAppLifecycleState' not in t:
               anchor = "class VoiceleafApp extends StatelessWidget {"
               obs = """class _SilenceOnLeave extends WidgetsBindingObserver {
             @override
             void didChangeAppLifecycleState(AppLifecycleState state) {
               if (state != AppLifecycleState.resumed) {
-                // leaving the app must never leave a sound running
                 Sounds.stopAll();
               }
             }
@@ -6146,22 +6139,40 @@ jobs:
               if anchor in t:
                   t = t.replace(anchor, obs + anchor, 1)
                   old = "  WidgetsFlutterBinding.ensureInitialized();"
-                  new = ("  WidgetsFlutterBinding.ensureInitialized();\n"
-                         "  WidgetsBinding.instance.addObserver(_silenceOnLeave);")
                   if old in t:
-                      t = t.replace(old, new, 1)
+                      t = t.replace(old, old + "\n  WidgetsBinding.instance.addObserver(_silenceOnLeave);", 1)
                       changed.append('leaving the app silences every sound')
               m.write_text(t)
 
-          # and no reading voice ever starts over a running loop
-          p = pathlib.Path('lib/player_page.dart')
-          u = p.read_text()
-          anchor2 = "    // no stop() here: on some engines it cancels the speak that follows"
-          if anchor2 in u and 'Sounds.stopAll()' not in u:
-              u = u.replace(anchor2, "    // a processing loop must not sit under the reading voice\n    await Sounds.stopAll();\n" + anchor2, 1)
-              changed.append('the reading voice silences the loop first')
-          p.write_text(u)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+      - name: Make the speech declare itself as media
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
 
+          p = pathlib.Path('lib/player_page.dart')
+          s = p.read_text()
+          changed = []
+
+          anchor = "    // no stop() here: on some engines it cancels the speak that follows"
+          if anchor in s and 'setAudioAttributesForNavigation' not in s:
+              add = """    // declare the speech as media, so it rides the volume the reader expects
+              try {
+                await tts.setAudioAttributesForNavigation();
+              } catch (_) {}
+              try {
+                await tts.setVolume(1.0);
+              } catch (_) {}
+              try {
+                await tts.setQueueMode(1);
+              } catch (_) {}
+          """
+              s = s.replace(anchor, add + anchor, 1)
+              changed.append('speech declares itself as media, at full volume, queued')
+
+          p.write_text(s)
           print('CHANGED:', ', '.join(changed) if changed else 'nothing')
           PY
           python3 /tmp/p.py
