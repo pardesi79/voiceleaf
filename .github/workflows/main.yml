@@ -5918,41 +5918,30 @@ jobs:
       - name: His page sound, if he dropped one in
         run: |
           cat > /tmp/p.py <<'PY'
-          import pathlib, shutil, subprocess
+          import pathlib, shutil
 
-          # One file from him replaces the page sounds. He drops it in the repo root
-          # as pageSound.mp3 (or .wav) and the build puts it in all three places.
-          targets = ['snd_page_next.wav', 'snd_page_prev.wav', 'snd_pageflip.wav']
+          # One file from him replaces the page sounds. He named it pageFlip.mp3 and put
+          # it in the repo root. No conversion: the app asks for .mp3 first and falls
+          # back to .wav, so his file is used exactly as he made it.
+          targets = ['snd_page_next', 'snd_page_prev', 'snd_pageflip']
           found = None
-          for name in ('pageSound.mp3', 'pageSound.wav', 'pageSound.m4a', 'pageSound.ogg'):
+          for name in ('pageFlip.mp3', 'pageSound.mp3', 'pageFlip.wav', 'pageSound.wav',
+                       'pageFlip.m4a', 'pageSound.m4a'):
               p = pathlib.Path(name)
               if p.exists():
                   found = p
                   break
 
           if found is None:
-              print('no pageSound file in the repo - the generated page sounds stay')
+              print('no page sound file in the repo - the generated page sounds stay')
           else:
               made = 0
               for t in targets:
-                  out = pathlib.Path('assets') / t
+                  out = pathlib.Path('assets') / (t + found.suffix.lower())
                   out.parent.mkdir(exist_ok=True)
-                  try:
-                      # GitHub runners carry ffmpeg, so any format becomes the wav the app plays
-                      r = subprocess.run(
-                          ['ffmpeg', '-y', '-i', str(found), '-ar', '44100', '-ac', '1', str(out)],
-                          capture_output=True)
-                      if r.returncode == 0:
-                          made += 1
-                  except FileNotFoundError:
-                      break
-              if made == 0:
-                  # no ffmpeg: only a wav can be copied straight across
-                  if found.suffix.lower() == '.wav':
-                      for t in targets:
-                          shutil.copy(found, pathlib.Path('assets') / t)
-                          made += 1
-              print('page sound applied to', made, 'of', len(targets), 'files from', found.name)
+                  shutil.copy(found, out)
+                  made += 1
+              print('page sound copied to', made, 'files from', found.name)
           PY
           python3 /tmp/p.py
 
@@ -5997,6 +5986,182 @@ jobs:
               changed.append('a guard that always stops the loop')
 
           p.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Prefer his mp3 when one exists
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          w = pathlib.Path('lib/widgets.dart')
+          s = w.read_text()
+          changed = []
+
+          old = "await _one.play(AssetSource('snd_$name.wav'), volume: 1.0);"
+          new = """// his own file wins when there is one, otherwise the generated wav
+                try {
+                  await _one.play(AssetSource('snd_$name.mp3'), volume: 1.0);
+                } catch (_) {
+                  await _one.play(AssetSource('snd_$name.wav'), volume: 1.0);
+                }"""
+          if old in s:
+              s = s.replace(old, new, 1)
+              changed.append('the player prefers an mp3 when one exists')
+
+          old2 = "await _loop.play(AssetSource('snd_$name.wav'), volume: 0.55);"
+          new2 = """try {
+                  await _loop.play(AssetSource('snd_$name.mp3'), volume: 0.55);
+                } catch (_) {
+                  await _loop.play(AssetSource('snd_$name.wav'), volume: 0.55);
+                }"""
+          if old2 in s:
+              s = s.replace(old2, new2, 1)
+              changed.append('the loop prefers an mp3 when one exists')
+
+          w.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Play the opening sound
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          # The opening sound was generated but never played: only pageflip, complete
+          # and working were ever called. Play it once the first frame is on screen.
+          p = pathlib.Path('lib/main.dart')
+          s = p.read_text()
+          old = "  runApp(const VoiceleafApp());"
+          new = """  runApp(const VoiceleafApp());
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              Sounds.play('app_open');
+            });"""
+          if old in s and "play('app_open')" not in s:
+              s = s.replace(old, new, 1)
+              changed.append('the app now plays its opening sound')
+          p.write_text(s)
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Never let a sound outlive its screen
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+
+          changed = []
+
+          # The loop had no way out except dispose(). If that screen stayed, or the app
+          # was left, it played forever - and it kept the audio session busy, which is
+          # why the reading voice and every player button went dead. Give the loop a
+          # watchdog and a stop that works from anywhere.
+          w = pathlib.Path('lib/widgets.dart')
+          s = w.read_text()
+
+          old_loop = """  static Future<void> loop(String name) async {
+              try {
+                await _init();
+                await _loop.stop();
+                await _loop.setReleaseMode(ReleaseMode.loop);
+                await _loop.play(AssetSource('snd_$name.wav'), volume: 0.55);
+              } catch (_) {}
+            }"""
+          new_loop = """  static Timer? _watchdog;
+
+            static Future<void> loop(String name) async {
+              try {
+                await _init();
+                await _loop.stop();
+                await _loop.setReleaseMode(ReleaseMode.loop);
+                await _loop.play(AssetSource('snd_$name.wav'), volume: 0.55);
+                // a loop with no end is a bug, so it ends itself
+                _watchdog?.cancel();
+                _watchdog = Timer(const Duration(seconds: 90), () {
+                  stopAll();
+                });
+              } catch (_) {}
+            }"""
+          if old_loop in s:
+              s = s.replace(old_loop, new_loop, 1)
+              changed.append('the loop now stops itself after 90 seconds')
+
+          old_stop = """  static Future<void> stopLoop() async {
+              try {
+                await _loop.stop();
+              } catch (_) {}
+            }"""
+          new_stop = """  static Future<void> stopLoop() async {
+              _watchdog?.cancel();
+              _watchdog = null;
+              try {
+                await _loop.stop();
+                await _loop.setReleaseMode(ReleaseMode.release);
+              } catch (_) {}
+            }
+
+            /// Silence everything. Safe to call from anywhere, at any time.
+            static Future<void> stopAll() async {
+              _watchdog?.cancel();
+              _watchdog = null;
+              try {
+                await _loop.stop();
+                await _one.stop();
+                await _loop.setReleaseMode(ReleaseMode.release);
+              } catch (_) {}
+            }"""
+          if old_stop in s:
+              s = s.replace(old_stop, new_stop, 1)
+              changed.append('a stopAll that silences both players')
+
+          if 'import \'dart:async\';' not in s:
+              s = "import 'dart:async';\n" + s
+              changed.append('the timer import')
+
+          w.write_text(s)
+
+          # the app silences the loop when it leaves the screen, whatever screen it was
+          m = pathlib.Path('lib/main.dart')
+          t = m.read_text()
+          if 'Sounds.stopAll()' not in t:
+              anchor = "class VoiceleafApp extends StatelessWidget {"
+              obs = """class _SilenceOnLeave extends WidgetsBindingObserver {
+            @override
+            void didChangeAppLifecycleState(AppLifecycleState state) {
+              if (state != AppLifecycleState.resumed) {
+                // leaving the app must never leave a sound running
+                Sounds.stopAll();
+              }
+            }
+          }
+
+          const _silenceOnLeave = _SilenceOnLeave();
+
+          """
+              if anchor in t:
+                  t = t.replace(anchor, obs + anchor, 1)
+                  old = "  WidgetsFlutterBinding.ensureInitialized();"
+                  new = ("  WidgetsFlutterBinding.ensureInitialized();\n"
+                         "  WidgetsBinding.instance.addObserver(_silenceOnLeave);")
+                  if old in t:
+                      t = t.replace(old, new, 1)
+                      changed.append('leaving the app silences every sound')
+              m.write_text(t)
+
+          # and no reading voice ever starts over a running loop
+          p = pathlib.Path('lib/player_page.dart')
+          u = p.read_text()
+          anchor2 = "    // no stop() here: on some engines it cancels the speak that follows"
+          if anchor2 in u and 'Sounds.stopAll()' not in u:
+              u = u.replace(anchor2, "    // a processing loop must not sit under the reading voice\n    await Sounds.stopAll();\n" + anchor2, 1)
+              changed.append('the reading voice silences the loop first')
+          p.write_text(u)
+
           print('CHANGED:', ', '.join(changed) if changed else 'nothing')
           PY
           python3 /tmp/p.py
