@@ -6273,14 +6273,18 @@ jobs:
                                   copy = java.io.File(cacheDir, "gm_" + System.currentTimeMillis() + ".pdf")
                                   java.io.File(path).copyTo(copy, overwrite = true)
                                   val doc = com.tom_roush.pdfbox.pdmodel.PDDocument.load(copy)
-                                  val stripper = com.tom_roush.pdfbox.text.PDFTextStripper()
+                                  // charactersByArticle is protected, so a small subclass exposes it
+                                  val stripper = object : com.tom_roush.pdfbox.text.PDFTextStripper() {
+                                      fun all(): List<com.tom_roush.pdfbox.text.TextPosition> {
+                                          val out = ArrayList<com.tom_roush.pdfbox.text.TextPosition>()
+                                          for (a in charactersByArticle) out.addAll(a)
+                                          return out
+                                      }
+                                  }
                                   stripper.startPage = 1
                                   stripper.endPage = 1
                                   stripper.getText(doc)  // fills the character list
-                                  val positions = ArrayList<com.tom_roush.pdfbox.text.TextPosition>()
-                                  for (article in stripper.charactersByArticle) {
-                                      positions.addAll(article)
-                                  }
+                                  val positions = stripper.all()
                                   val page = doc.getPage(0)
                                   val box = page.cropBox
                                   val pageW = box.width
@@ -6321,7 +6325,7 @@ jobs:
                                       val yTop = ((pageH - p.yDirAdj - p.heightDir) * scale).toInt()
                                       val y0 = yTop.coerceIn(0, bmp.height - 1)
                                       val cw = (p.widthDirAdj * scale).toInt().coerceAtLeast(2)
-                                      val chh = (p.heightDirAdj * scale).toInt().coerceAtLeast(2)
+                                      val chh = (p.heightDir * scale).toInt().coerceAtLeast(2)
                                       val x1 = (x0 + cw).coerceAtMost(bmp.width)
                                       val y1 = (y0 + chh).coerceAtMost(bmp.height)
                                       if (x1 - x0 < 2 || y1 - y0 < 2) continue
