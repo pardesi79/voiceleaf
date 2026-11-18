@@ -6201,6 +6201,45 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Give the scanner a library
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+
+          # ML Kit's Document Scanner cleans the photo before OCR sees it: it finds the
+          # page edge, straightens a tilted page, brightens a dim one. That helps the
+          # recogniser more than any model swap, because it fixes the picture it is given.
+          changed = []
+
+          target = None
+          for name in ('build.gradle.kts', 'build.gradle'):
+              for g in pathlib.Path('android').rglob(name):
+                  if 'text-recognition' in g.read_text():
+                      target = g
+                      break
+              if target:
+                  break
+
+          if target is None:
+              print('CHANGED: nothing - no gradle file with the OCR libraries')
+          else:
+              t = target.read_text()
+              if 'document-scanner' in t:
+                  print('CHANGED: nothing - already there')
+              else:
+                  m = re.search(r'implementation\("com\.google\.android\.gms:play-services-mlkit-text-recognition[^"]*"\)', t)
+                  if not m:
+                      m = re.search(r'implementation\("com\.google\.mlkit:text-recognition[^"]*"\)', t)
+                  if m:
+                      line = m.group(0)
+                      add = line + '\n    implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1")'
+                      t = t.replace(line, add, 1)
+                      target.write_text(t)
+                      changed.append('the scanner library is in the build')
+                  print('CHANGED:', ', '.join(changed) if changed else 'nothing - no anchor line')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
