@@ -6552,6 +6552,195 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Add the Walkman-Chanakya entries we were missing
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+
+          # The Walkman-Chanakya905 overrides published by the MIT-licensed lipi project.
+          # These are entries our table either lacks or gets wrong, and every one of them
+          # appears in a real NCERT chapter. Multi-character tokens come first because
+          # the single characters would otherwise eat them.
+          OVERRIDES = [
+              ('oaQ', '\u0915\u0902'),      # कं
+              ('oqQ', '\u0915\u0941'),      # कु
+              ('owQ', '\u0915\u0942'),      # कू
+              ('m\u00a1Q', '\u090a\u0901'), # ऊँ
+              ('iwQ', '\u092b\u0942'),      # फू
+              ('oQ',  '\u0915\u0941'),      # कु
+              ('iQ',  '\u092b'),            # फ
+              ('\u00d8', '\u0915\u094d\u0930'),          # क्र
+              ('\u00d1', '\u0915\u0943'),                # कृ
+              ('\u00cd', '\u090b'),                      # ऋ
+              ('\u00af', '\u093f\u0902'),                # िं
+              ('\u00bc', '\u0926\u094d\u0927'),          # द्ध
+              ('\u00b1', '\u090f\u0902'),                # एं
+              ('\u00b8', ','),                           # ,
+              ('\u00aa', '\u094d\u0930'),                # र्
+              ('\u00dd', '\u0941\u0915'),                # ुक
+              ('\u201d', '\u091c'),                      # ज
+              ('\u00d9', '\u091f'),                      # ट
+              ('\u00e3', '\u0902'),                      # ं
+              ('\u00ed', '\u0916'),                      # ख
+              ('\u00b6', '\u201c'),                      # “
+          ]
+
+          def dd(s):
+              out=[]
+              for c in s:
+                  if c=='\\': out.append('\\\\')
+                  elif c=="'": out.append("\\'")
+                  elif c=='$': out.append('\\$')
+                  else: out.append(c)
+              return ''.join(out)
+
+          rows = '\n'.join("  ['%s', '%s']," % (dd(a), dd(b)) for a,b in OVERRIDES)
+
+          p = pathlib.Path('lib/legacy_fonts.dart')
+          s = p.read_text()
+          changed = []
+          if 'walkmanOverrides' not in s:
+              block = '''
+          /// Entries that the Walkman-Chanakya905 font needs and the base table lacks or
+          /// gets wrong. Taken from the MIT-licensed lipi project, which lists them for
+          /// this exact font. Multi-character tokens are listed first.
+          const List<List<String>> walkmanOverrides = <List<String>>[
+          %s
+          ];
+
+          /// The base table with those entries applied on top.
+          List<List<String>> get krutiTableWithOverrides {
+            final seen = <String>{};
+            final out = <List<String>>[];
+            for (final p in walkmanOverrides) {
+              if (seen.add(p[0])) out.add(p);
+            }
+            for (final p in krutiPairs) {
+              if (seen.add(p[0])) out.add(p);
+            }
+            return out;
+          }
+          ''' % rows
+              s = s.rstrip() + '\n' + block
+              p.write_text(s)
+              changed.append('the Walkman-Chanakya overrides are in the table')
+
+          # and the converter must walk that merged table, not the bare one
+          if 'krutiTableWithOverrides' in s and 'for (final p in krutiPairs) {' in s:
+              s = p.read_text()
+              s = s.replace('  for (final p in krutiPairs) {', '  for (final p in krutiTableWithOverrides) {', 1)
+              p.write_text(s)
+              changed.append('the converter reads the merged table')
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Add the conjuncts SIL International published
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          BLOCK = """
+          /// Conjunct rules from SIL International's official W-C-905 mapping (MIT).
+          /// One byte here stands for a whole cluster, so these are applied before any
+          /// single-character entry or the cluster would be torn apart.
+          const List<List<String>> silConjuncts = <List<String>>[
+            ['AA', '॥'],
+            ['{k', 'क्ष'],
+            ['=k', 'त्र'],
+            ['[k', 'ख'],
+            ['Xk', 'ग'],
+            ['?k', 'घ'],
+            ['Pk', 'च'],
+            ['Tk', 'ज'],
+            ['×k', 'ञ'],
+            ['.k', 'ण'],
+            ['Rk', 'त'],
+            ['Fk', 'थ'],
+            ['èk', 'ध'],
+            ['Uk', 'न'],
+            ['Ik', 'प'],
+            ['iQ', 'फ'],
+            ['ÝQ', 'फ'],
+            ['Ck', 'ब'],
+            ['Hk', 'भ'],
+            ['Ek', 'म'],
+            ['Õk', 'य'],
+            ['Yk', 'ल'],
+            ['Ok', 'व'],
+            ['\'k', 'श'],
+            ['"k', 'ष'],
+            ['Lk', 'स'],
+            ['\u0094k', 'ज़'],
+            ['M+', 'ड़'],
+            ['<+', 'ढ़'],
+            ['kW', 'ॉ'],
+            ['ks', 'ो'],
+            ['kS', 'ौ'],
+            ['vk', 'आ'],
+            ['b±', 'ईं'],
+            [',W', 'ऍ'],
+            [',s', 'ऐ'],
+            ['vks', 'ओ'],
+            ['vkS', 'औ'],
+          ];
+          """
+
+          p = pathlib.Path('lib/legacy_fonts.dart')
+          s = p.read_text()
+          changed = []
+          if 'silConjuncts' not in s:
+              s = s.rstrip() + '\n' + BLOCK
+              p.write_text(s)
+              changed.append('SIL conjunct rules added')
+
+          s = p.read_text()
+          if 'silConjuncts' in s and 'for (final p in walkmanOverrides)' in s and 'for (final p in silConjuncts)' not in s:
+              s = s.replace("  for (final p in walkmanOverrides) {",
+                            "  for (final p in silConjuncts) {\n    if (seen.add(p[0])) out.add(p);\n  }\n  for (final p in walkmanOverrides) {", 1)
+              p.write_text(s)
+              changed.append('the converter tries the conjuncts first')
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Join a vowel sign back to its word
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          # A vowel sign sitting alone between two spaces is a letter that lost its
+          # consonant in the conversion. Joining it back recovered six words on a real
+          # NCERT chapter, with no other change to the text.
+          p = pathlib.Path('lib/extractors.dart')
+          s = p.read_text()
+          changed = []
+
+          anchor = "  static String cleanHindiWords(String input) {"
+          if anchor in s and 'loneMatra' not in s:
+              i = s.index(anchor) + len(anchor)
+              rest = s[i:]
+              m = rest.find('var t = ')
+              if m >= 0:
+                  end = rest.find(';', m)
+                  cut = i + end + 1
+                  rules = '''
+              // a vowel sign alone between spaces lost its consonant
+              t = t.replaceAllMapped(
+                  RegExp(r'\\s([\\u093e-\\u094c])\\s'), (m) => m[1]!);
+              // the same sign twice is one too many
+              t = t.replaceAll('\\u093c\\u093c', '\\u093c');
+          '''
+                  s = s[:cut] + rules + s[cut:]
+                  p.write_text(s)
+                  changed.append('a lone vowel sign is joined back to its word')
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
