@@ -3210,43 +3210,6 @@ jobs:
           PY
           python3 /tmp/p.py
 
-      - name: Let Mobile Vision read Hindi on its own
-        run: |
-          cat > /tmp/p.py <<'PY'
-          import pathlib
-
-          ex = pathlib.Path('lib/extractors.dart')
-          s = ex.read_text()
-          before = s
-
-          # Hindi pages are read by Mobile Vision alone. Everything else stays on ML Kit.
-          old = """    final ml = await ocrFile(f, mode);
-              if (mode != 'auto' && mode != 'devanagari') return ml;
-              if (ml.trim().isEmpty) return ml;
-              // A second opinion on Hindi pages. It is only allowed to win when it
-              // actually found the page: a short or empty answer breaks almost no rules
-              // simply because it has nothing to break, so length is checked first.
-              final vm = await _visionText(f);
-              if (vm.length < (ml.length * 0.75).round()) return ml;
-              return _brokenMarks(vm) < _brokenMarks(ml) ? vm : ml;"""
-
-          new = """    final ml = await ocrFile(f, mode);
-              if (mode != 'auto' && mode != 'devanagari') return ml;
-              // Hindi is read by the older Google engine, which handles the joined
-              // letters better. ML Kit still reads it first, and its answer is used
-              // whenever the other engine has nothing to say.
-              final vm = await _visionText(f);
-              if (vm.trim().isEmpty) return ml;
-              return vm;"""
-
-          if old in s:
-              s = s.replace(old, new, 1)
-
-          ex.write_text(s)
-          print('hindi -> vision only:', 'return vm;' in s, '| changed:', s != before)
-          PY
-          python3 /tmp/p.py
-
       - name: Make the Test OCR button tell the truth
         run: |
           cat > /tmp/p.py <<'PY'
@@ -3465,153 +3428,6 @@ jobs:
           PY
           python3 /tmp/p.py
 
-      - name: Let Mobile Vision read Hindi and nothing else
-        run: |
-          cat > /tmp/p.py <<'PY'
-          import pathlib
-
-          ex = pathlib.Path('lib/extractors.dart')
-          s = ex.read_text()
-          changed = []
-
-          # Hindi must be read by Mobile Vision alone. ML Kit must not even run, so the
-          # result is Mobile Vision's and nothing else. That is the only way to see
-          # whether it really reads Devanagari.
-          old = """    final ml = await ocrFile(f, mode);
-              if (mode != 'auto' && mode != 'devanagari') return ml;
-              // Hindi is read by the older Google engine, which handles the joined
-              // letters better. ML Kit still reads it first, and its answer is used
-              // whenever the other engine has nothing to say.
-              final vm = await _visionText(f);
-              // Only a real reading may win. A short answer is not an empty one, so the
-              // length is what gets checked, not just emptiness.
-              if (vm.length < (ml.length * 0.75).round()) return ml;
-              return vm;"""
-          new = """    if (mode == 'auto' || mode == 'devanagari') {
-                // Hindi is read by Mobile Vision and nothing else. ML Kit does not run
-                // here, so whatever comes back is Mobile Vision's own reading.
-                return await _visionText(f);
-              }
-              return await ocrFile(f, mode);"""
-          if old in s:
-              s = s.replace(old, new, 1)
-              changed.append('hindi reads with Mobile Vision alone')
-          ex.write_text(s)
-          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
-          PY
-          python3 /tmp/p.py
-
-      - name: Make Mobile Vision say what it really did
-        run: |
-          cat > /tmp/p.py <<'PY'
-          import pathlib
-
-          kt = None
-          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
-              kt = p
-          t = kt.read_text()
-          changed = []
-
-          # 1. the picture is far bigger than Mobile Vision likes; bring it down first
-          old = """                val bitmap = android.graphics.BitmapFactory.decodeFile(path)
-                          if (bitmap == null) {
-                              result.success("")
-                              return@setMethodCallHandler
-                          }"""
-          new = """                val decoded = android.graphics.BitmapFactory.decodeFile(path)
-                          if (decoded == null) {
-                              result.success("NOBITMAP")
-                              return@setMethodCallHandler
-                          }
-                          // Mobile Vision is made for camera sized pictures. A whole page
-                          // at 2x is about two megapixels, far bigger, so it is shrunk.
-                          val widest = 1200
-                          val bitmap = if (decoded.width > widest) {
-                              val h = (decoded.height * widest.toDouble() / decoded.width).toInt()
-                              android.graphics.Bitmap.createScaledBitmap(decoded, widest, h, true)
-                          } else decoded"""
-          if old in t:
-              t = t.replace(old, new, 1)
-              changed.append('page shrunk for Mobile Vision')
-
-          # 2. never answer with an empty string: say what actually happened
-          old2 = """                    if (!detector.isOperational) {
-                                  result.success("")
-                                  return@setMethodCallHandler
-                              }"""
-          new2 = """                    if (!detector.isOperational) {
-                                  result.success("NOTREADY")
-                                  return@setMethodCallHandler
-                              }"""
-          if old2 in t:
-              t = t.replace(old2, new2, 1)
-              changed.append('not ready is reported')
-
-          # 3. the words may sit in the block itself when components come back empty
-          old3 = """                    val found = detector.detect(frame)
-                              val sb = StringBuilder()
-                              for (i in 0 until found.size()) {
-                                  val block = found.valueAt(i)
-                                      as? com.google.android.gms.vision.text.TextBlock
-                                      ?: continue
-                                  // TextBlock carries its words in components, not in
-                                  // lines, and each component holds the text in value.
-                                  for (part in block.components) {
-                                      val piece = part.value
-                                      if (piece != null && piece.isNotEmpty()) {
-                                          sb.append(piece).append(" ")
-                                      }
-                                  }
-                                  sb.append("\\n")
-                              }
-                              result.success(sb.toString())"""
-          new3 = """                    val found = detector.detect(frame)
-                              if (found.size() == 0) {
-                                  result.success("NOBLOCKS")
-                                  return@setMethodCallHandler
-                              }
-                              val sb = StringBuilder()
-                              for (i in 0 until found.size()) {
-                                  val block = found.valueAt(i)
-                                      as? com.google.android.gms.vision.text.TextBlock
-                                      ?: continue
-                                  val whole = block.value
-                                  if (whole != null && whole.isNotEmpty()) {
-                                      sb.append(whole).append("\\n")
-                                      continue
-                                  }
-                                  // when the block itself is blank, its parts may still
-                                  // carry the words
-                                  for (part in block.components) {
-                                      val piece = part.value
-                                      if (piece != null && piece.isNotEmpty()) {
-                                          sb.append(piece).append(" ")
-                                      }
-                                  }
-                                  sb.append("\\n")
-                              }
-                              val out = sb.toString().trim()
-                              result.success(if (out.isEmpty()) "EMPTYBLOCKS" else out)"""
-          if old3 in t:
-              t = t.replace(old3, new3, 1)
-              changed.append('block text used first, then parts')
-
-          # 4. a failure must say so
-          old4 = """                } catch (e: Throwable) {
-                              result.success("")
-                          } finally {"""
-          new4 = """                } catch (e: Throwable) {
-                              result.success("ERR " + e.javaClass.simpleName + ": " + e.message)
-                          } finally {"""
-          if old4 in t:
-              t = t.replace(old4, new4, 1)
-              changed.append('errors reported')
-
-          kt.write_text(t)
-          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
-          PY
-          python3 /tmp/p.py
-
       - name: Read the words the PDF already carries
         run: |
           cat > /tmp/p.py <<'PY'
@@ -3691,74 +3507,6 @@ jobs:
               changed.append('layer used before drawing')
 
           ex.write_text(s)
-          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
-          PY
-          python3 /tmp/p.py
-
-      - name: Send every page to Mobile Vision exactly as drawn
-        run: |
-          cat > /tmp/p.py <<'PY'
-          import pathlib
-
-          changed = []
-          ex = pathlib.Path('lib/extractors.dart')
-          s = ex.read_text()
-
-          # 1. the text layer path goes: the page picture is what gets read
-          old = """    // A digital PDF carries its own words; use them and skip OCR entirely.
-              final layer = await _fromTextLayer(path, from, to);
-              if (layer.length == to - from + 1 &&
-                  layer.every((p) => p.length > 40 && !p.contains('\\u0000'))) {
-                final out = <String>[];
-                for (var i = 0; i < layer.length; i++) {
-                  onProgress(i + 1, layer.length, layer[i].length);
-                  final n = from + i;
-                  out.add(pageNumbers ? 'Page $n.\\n${layer[i]}' : layer[i]);
-                }
-                return out;
-              }
-
-          """
-          if old in s:
-              s = s.replace(old, '', 1)
-              changed.append('text layer path removed')
-
-          # 2. every page, every language, goes to the older engine. No guard, no
-          #    second opinion, nothing in between.
-          old2 = """    if (mode == 'auto' || mode == 'devanagari') {
-                // Hindi is read by Mobile Vision and nothing else. ML Kit does not run
-                // here, so whatever comes back is Mobile Vision's own reading.
-                return await _visionText(f);
-              }
-              return await ocrFile(f, mode);"""
-          new2 = """    // The page picture goes straight to the older engine, exactly as drawn.
-              // No language check, no second engine, nothing in between.
-              return await _visionText(f);"""
-          if old2 in s:
-              s = s.replace(old2, new2, 1)
-              changed.append('everything goes to Mobile Vision')
-
-          ex.write_text(s)
-
-          # 3. the picture must reach the engine exactly as it was drawn
-          kt = None
-          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
-              kt = p
-          t = kt.read_text()
-          old3 = """                // Mobile Vision is made for camera sized pictures. A whole page
-                          // at 2x is about two megapixels, far bigger, so it is shrunk.
-                          val widest = 1200
-                          val bitmap = if (decoded.width > widest) {
-                              val h = (decoded.height * widest.toDouble() / decoded.width).toInt()
-                              android.graphics.Bitmap.createScaledBitmap(decoded, widest, h, true)
-                          } else decoded"""
-          new3 = """                // the picture is handed over exactly as it was drawn
-                          val bitmap = decoded"""
-          if old3 in t:
-              t = t.replace(old3, new3, 1)
-              changed.append('picture no longer shrunk')
-
-          kt.write_text(t)
           print('CHANGED:', ', '.join(changed) if changed else 'nothing')
           PY
           python3 /tmp/p.py
@@ -6736,6 +6484,111 @@ jobs:
                   s = s[:cut] + rules + s[cut:]
                   p.write_text(s)
                   changed.append('a lone vowel sign is joined back to its word')
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Use ML Kit v2 and drop the dead Mobile Vision
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+
+          changed = []
+
+          # 1. glyph_map: it was calling the old Mobile Vision channel, which is dead.
+          #    The real ML Kit v2 recogniser lives in Extractors.ocrFile.
+          gm = pathlib.Path('lib/glyph_map.dart')
+          if gm.exists():
+              s = gm.read_text()
+              if "import 'extractors.dart';" not in s:
+                  s = "import 'extractors.dart';\n" + s
+              before = s
+              s = s.replace(
+                  "final t = await _vision.invokeMethod<String>('page', {'path': p});",
+                  "final t = await Extractors.ocrFile(File(p), 'devanagari');")
+              if s != before:
+                  changed.append('glyph_map now uses ML Kit v2')
+              gm.write_text(s)
+
+          # 2. the same dead channel in the extractor helper
+          ex = pathlib.Path('lib/extractors.dart')
+          if ex.exists():
+              s = ex.read_text()
+              before = s
+              s = s.replace(
+                  "final t = await _vision.invokeMethod<String>('page', {'path': f.path});",
+                  "final t = await Extractors.ocrFile(f, 'devanagari');")
+              if s != before:
+                  changed.append('the second-opinion helper uses ML Kit v2')
+              ex.write_text(s)
+
+          # 3. drop the Mobile Vision channel from the native side
+          for kt in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              t = kt.read_text()
+              i = t.find('MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/vision")')
+              if i < 0:
+                  continue
+              # the handler runs to the next MethodChannel or the closing of the block
+              j = t.find('MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "voiceleaf/', i + 20)
+              if j < 0:
+                  j = t.find('\n        }\n', i)
+                  if j < 0:
+                      continue
+              t = t[:i] + t[j:]
+              kt.write_text(t)
+              changed.append('Mobile Vision removed from the native side')
+
+          # 4. the scanner library is out of beta
+          g = None
+          for name in ('build.gradle.kts','build.gradle'):
+              for f in pathlib.Path('android').rglob(name):
+                  if 'text-recognition' in f.read_text():
+                      g = f; break
+              if g: break
+          if g is not None:
+              t = g.read_text()
+              if 'document-scanner:16.0.0-beta1' in t:
+                  t = t.replace('document-scanner:16.0.0-beta1', 'document-scanner:16.0.0')
+                  g.write_text(t)
+                  changed.append('document scanner moved to the stable release')
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Finish removing Mobile Vision
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+
+          changed = []
+
+          # The last Mobile Vision use was a readiness probe. ML Kit v2 is bundled in
+          # the APK, so there is nothing to probe - and the old API is deprecated.
+          for kt in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              t = kt.read_text()
+              if 'com.google.android.gms.vision' not in t:
+                  continue
+              # replace the whole try-block that builds the old recogniser
+              t = re.sub(
+                  r'val probe = com\.google\.android\.gms\.vision\.text\.TextRecognizer\s*\n\s*\.Builder\(applicationContext\)\.build\(\)\s*\n\s*val ok = probe\.isOperational\s*\n\s*probe\.release\(\)\s*\n\s*ok',
+                  'true  // ML Kit v2 is bundled, so it is always ready',
+                  t)
+              t = t.replace('com.google.android.gms.vision.text.TextRecognizer', 'true')
+              kt.write_text(t)
+              changed.append('the old readiness probe is gone')
+
+          # unused channel fields
+          for f in ('lib/glyph_map.dart', 'lib/extractors.dart'):
+              p = pathlib.Path(f)
+              if not p.exists(): continue
+              s = p.read_text()
+              before = s
+              s = s.replace("  static const MethodChannel _vision = MethodChannel('voiceleaf/vision');\n", '')
+              if s != before:
+                  changed.append(f + ': dead channel field removed')
+                  p.write_text(s)
 
           print('CHANGED:', ', '.join(changed) if changed else 'nothing')
           PY
