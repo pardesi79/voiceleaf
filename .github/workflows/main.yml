@@ -386,27 +386,40 @@ jobs:
 
       - name: Add the text recognition, PDF and scanner libraries
         run: |
+
           python3 - <<'PYDEPS'
           import pathlib
-          g = pathlib.Path('android/app/build.gradle')
+
+          # newer Flutter writes build.gradle.kts, older writes build.gradle
+          g = pathlib.Path('android/app/build.gradle.kts')
+          if not g.exists():
+              g = pathlib.Path('android/app/build.gradle')
+          if not g.exists():
+              print('no gradle file found in android/app')
+              raise SystemExit(1)
+
           s = g.read_text()
-          if 'text-recognition' not in s:
-              lines = [
-                  '',
-                  'dependencies {',
-                  '    implementation(\'com.google.mlkit:text-recognition:16.0.1\')',
-                  '    implementation(\'com.google.mlkit:text-recognition-devanagari:16.0.1\')',
-                  '    implementation(\'com.google.mlkit:text-recognition-chinese:16.0.1\')',
-                  '    implementation(\'com.google.mlkit:text-recognition-japanese:16.0.1\')',
-                  '    implementation(\'com.google.mlkit:text-recognition-korean:16.0.1\')',
-                  '    implementation(\'com.tom-roush:pdfbox-android:2.0.27.0\')',
-                  '    implementation(\'com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1\')',
-                  '}',
-              ]
-              g.write_text(s.rstrip() + chr(10) + chr(10).join(lines))
-              print('dependencies added')
-          else:
+          if 'text-recognition' in s:
               print('dependencies already present')
+              raise SystemExit(0)
+
+          names = [
+              'com.google.mlkit:text-recognition:16.0.1',
+              'com.google.mlkit:text-recognition-devanagari:16.0.1',
+              'com.google.mlkit:text-recognition-chinese:16.0.1',
+              'com.google.mlkit:text-recognition-japanese:16.0.1',
+              'com.google.mlkit:text-recognition-korean:16.0.1',
+              'com.tom-roush:pdfbox-android:2.0.27.0',
+              'com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1',
+          ]
+
+          # double quotes work in both Groovy and the Kotlin DSL
+          lines = ['', 'dependencies {']
+          for n in names:
+              lines.append('    implementation("' + n + '")')
+          lines.append('}')
+          g.write_text(s.rstrip() + chr(10) + chr(10).join(lines))
+          print('dependencies added to', g.name)
           PYDEPS
 
       - name: Write the packages and the test pictures
