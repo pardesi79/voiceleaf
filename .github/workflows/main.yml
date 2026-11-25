@@ -6557,36 +6557,35 @@ jobs:
           PY
           python3 /tmp/p.py
 
-      - name: Remove the dead Mobile Vision probe
+      - name: Purge the dead Mobile Vision probe
         run: |
           cat > /tmp/p.py <<'PY'
           import pathlib, re
 
           changed = []
 
-          # 1. any remaining Mobile Vision statement, in any shape, becomes a plain true.
+          # The old recogniser is built across two lines. Replace the whole statement
+          # with a plain boolean, then drop anything that consumed it.
           for kt in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
               t = kt.read_text()
               before = t
-              # the whole multi-line statement that builds the old recogniser
               t = re.sub(
-                  r'val\s+probe\s*=\s*com\.google\.android\.gms\.vision\.text\.TextRecognizer'
-                  r'(\s*\n\s*\.Builder\([^)]*\))?'
-                  r'(\s*\n\s*\.build\(\))?',
-                  'val probe = true /* ML Kit v2 is bundled */', t)
-              # then anything that used the probe
-              t = re.sub(r'\n\s*val\s+ok\s*=\s*probe\.isOperational', '', t)
-              t = re.sub(r'\n\s*probe\.release\(\)', '', t)
-              t = re.sub(r'\n\s*if\s*\(ok\)\s*"[^"]*"\s*else\s*"[^"]*"', '', t)
-              # the try block that only existed to probe the old API collapses to true
-              t = re.sub(r'val\s+ready\s*=\s*try\s*\{\s*\n\s*val\s+probe\s*=\s*true[^}]*?\n\s*ok\s*\n\s*\}\s*catch\s*\(e:\s*Throwable\)\s*\{\s*\n\s*false\s*\n\s*\}',
-                         'val ready = true /* ML Kit v2 is bundled */', t, flags=re.S)
-              t = t.replace('val probe = true /* ML Kit v2 is bundled */\n                            ', '')
+                  r'com\.google\.android\.gms\.vision\.text\.TextRecognizer'
+                  r'(\s*\n\s*\.Builder\(applicationContext\))?'
+                  r'(\s*\n?\s*\.build\(\))?',
+                  'true', t)
+              # any leftover chain lines
+              t = re.sub(r'^\s*\.Builder\(applicationContext\)\.build\(\)\s*\n', '', t, flags=re.M)
+              t = re.sub(r'^\s*\.Builder\(applicationContext\)\s*\n\s*\.build\(\)\s*\n', '', t, flags=re.M)
+              # the try block that only existed to probe collapses to true
+              t = re.sub(
+                  r'val\s+ready\s*=\s*try\s*\{[^}]*?\}\s*catch\s*\(e:\s*Throwable\)\s*\{[^}]*?\}',
+                  'val ready = true /* ML Kit v2 is bundled */', t, flags=re.S)
               if t != before:
                   kt.write_text(t)
-                  changed.append('every Mobile Vision statement is gone')
+                  changed.append('the old recogniser statement is gone')
 
-          # 2. drop the now-unused channel fields
+          # the dead channel fields
           for f in ('lib/glyph_map.dart', 'lib/extractors.dart'):
               p = pathlib.Path(f)
               if not p.exists(): continue
@@ -6595,7 +6594,36 @@ jobs:
               s = re.sub(r"\n\s*static const MethodChannel _vision = MethodChannel\('voiceleaf/vision'\);", '', s)
               if s != before:
                   p.write_text(s)
-                  changed.append(f + ': unused channel field removed')
+                  changed.append(f + ': dead channel field removed')
+
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
+      - name: Keep the scanner on the version that resolves
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib, re
+
+          changed = []
+
+          # 1. the smoke test must not probe a dead API
+          for kt in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              t = kt.read_text()
+              before = t
+              t = re.sub(r'private fun smokeTest\(\): String \{.*?\n    \}',
+                         'private fun smokeTest(): String = "ML Kit v2 (5 scripts): ready"',
+                         t, flags=re.S)
+              if t != before:
+                  kt.write_text(t)
+                  changed.append('the smoke test is a plain answer')
+
+          # 2. keep the scanner on the version that resolved last time
+          for g in pathlib.Path('android').rglob('build.gradle*'):
+              s = g.read_text()
+              if 'document-scanner:16.0.0"' in s:
+                  g.write_text(s.replace('document-scanner:16.0.0"', 'document-scanner:16.0.0-beta1"'))
+                  changed.append('the scanner stays on beta1, which resolved')
 
           print('CHANGED:', ', '.join(changed) if changed else 'nothing')
           PY
