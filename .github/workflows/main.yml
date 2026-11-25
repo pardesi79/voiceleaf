@@ -384,19 +384,30 @@ jobs:
               print('wrote', path, len(data)//1024, 'KB')
           PYB64
 
-      - name: Write the build dependencies
+      - name: Add the text recognition, PDF and scanner libraries
         run: |
-          python3 - <<'PYB64'
-          import base64, pathlib, os
-          files = {
-            'android/app/build.gradle': 'YW5kcm9pZCB7Cn0KZGVwZW5kZW5jaWVzIHsKICAgIGltcGxlbWVudGF0aW9uICdjb20uZ29vZ2xlLmFuZHJvaWQuZ21zOnBsYXktc2VydmljZXMtbWxraXQtdGV4dC1yZWNvZ25pdGlvbi1jaGluZXNlOjE2LjAuMicKICAgIGltcGxlbWVudGF0aW9uICdjb20uZ29vZ2xlLmFuZHJvaWQuZ21zOnBsYXktc2VydmljZXMtbWxraXQtdGV4dC1yZWNvZ25pdGlvbi1qYXBhbmVzZToxNi4wLjInCiAgICBpbXBsZW1lbnRhdGlvbiAnY29tLmdvb2dsZS5hbmRyb2lkLmdtczpwbGF5LXNlcnZpY2VzLW1sa2l0LXRleHQtcmVjb2duaXRpb24ta29yZWFuOjE2LjAuMicKCiAgICBpbXBsZW1lbnRhdGlvbiAnY29tLnRvbS1yb3VzaDpwZGZib3gtYW5kcm9pZDoyLjAuMjcuMCcKCiAgICBpbXBsZW1lbnRhdGlvbiAnY29tLmdvb2dsZS5hbmRyb2lkLmdtczpwbGF5LXNlcnZpY2VzLXZpc2lvbjoyMC4xLjMnCgogICAgaW1wbGVtZW50YXRpb24gJ2NvbS5nb29nbGUuYW5kcm9pZC5nbXM6cGxheS1zZXJ2aWNlcy1tbGtpdC10ZXh0LXJlY29nbml0aW9uOjE5LjAuMicKICAgIGltcGxlbWVudGF0aW9uICdjb20uZ29vZ2xlLmFuZHJvaWQuZ21zOnBsYXktc2VydmljZXMtbWxraXQtdGV4dC1yZWNvZ25pdGlvbi1kZXZhbmFnYXJpOjE2LjAuMicKfQoKZGVwZW5kZW5jaWVzIHsKICAgIAogICAgCiAgICAKICAgIAogICAgCn0KCmFuZHJvaWQgewogICAgc2lnbmluZ0NvbmZpZ3MgewogICAgICAgIHJlbGVhc2UgewogICAgICAgICAgICBzdG9yZUZpbGUgZmlsZSgidm9pY2VsZWFmLmprcyIpCiAgICAgICAgICAgIHN0b3JlUGFzc3dvcmQgInZvaWNlbGVhZjEyMyIKICAgICAgICAgICAga2V5QWxpYXMgInZvaWNlbGVhZiIKICAgICAgICAgICAga2V5UGFzc3dvcmQgInZvaWNlbGVhZjEyMyIKICAgICAgICB9CiAgICB9CiAgICBidWlsZFR5cGVzIHsKICAgICAgICByZWxlYXNlIHsKICAgICAgICAgICAgbWluaWZ5RW5hYmxlZCBmYWxzZQogICAgICAgICAgICBzaHJpbmtSZXNvdXJjZXMgZmFsc2UKICAgICAgICAgICAgc2lnbmluZ0NvbmZpZyBzaWduaW5nQ29uZmlncy5yZWxlYXNlCiAgICAgICAgfQogICAgfQogICAgbGludE9wdGlvbnMgewogICAgICAgIGNoZWNrUmVsZWFzZUJ1aWxkcyBmYWxzZQogICAgICAgIGFib3J0T25FcnJvciBmYWxzZQogICAgfQp9Cg==',
-          }
-          for path, data in files.items():
-              p = pathlib.Path(path)
-              p.parent.mkdir(parents=True, exist_ok=True)
-              p.write_bytes(base64.b64decode(data))
-              print('wrote', path, len(data)//1024, 'KB')
-          PYB64
+          python3 - <<'PYDEPS'
+          import pathlib
+          g = pathlib.Path('android/app/build.gradle')
+          s = g.read_text()
+          if 'text-recognition' not in s:
+              lines = [
+                  '',
+                  'dependencies {',
+                  '    implementation(\'com.google.mlkit:text-recognition:16.0.1\')',
+                  '    implementation(\'com.google.mlkit:text-recognition-devanagari:16.0.1\')',
+                  '    implementation(\'com.google.mlkit:text-recognition-chinese:16.0.1\')',
+                  '    implementation(\'com.google.mlkit:text-recognition-japanese:16.0.1\')',
+                  '    implementation(\'com.google.mlkit:text-recognition-korean:16.0.1\')',
+                  '    implementation(\'com.tom-roush:pdfbox-android:2.0.27.0\')',
+                  '    implementation(\'com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1\')',
+                  '}',
+              ]
+              g.write_text(s.rstrip() + chr(10) + chr(10).join(lines))
+              print('dependencies added')
+          else:
+              print('dependencies already present')
+          PYDEPS
 
       - name: Write the packages and the test pictures
         run: |
