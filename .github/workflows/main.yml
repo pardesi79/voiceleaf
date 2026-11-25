@@ -6489,7 +6489,7 @@ jobs:
           PY
           python3 /tmp/p.py
 
-      - name: Use ML Kit v2 and drop the dead Mobile Vision
+      - name: Route the glyph reader through ML Kit v2
         run: |
           cat > /tmp/p.py <<'PY'
           import pathlib, re
@@ -6557,38 +6557,45 @@ jobs:
           PY
           python3 /tmp/p.py
 
-      - name: Finish removing Mobile Vision
+      - name: Remove the dead Mobile Vision probe
         run: |
           cat > /tmp/p.py <<'PY'
           import pathlib, re
 
           changed = []
 
-          # The last Mobile Vision use was a readiness probe. ML Kit v2 is bundled in
-          # the APK, so there is nothing to probe - and the old API is deprecated.
+          # 1. any remaining Mobile Vision statement, in any shape, becomes a plain true.
           for kt in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
               t = kt.read_text()
-              if 'com.google.android.gms.vision' not in t:
-                  continue
-              # replace the whole try-block that builds the old recogniser
+              before = t
+              # the whole multi-line statement that builds the old recogniser
               t = re.sub(
-                  r'val probe = com\.google\.android\.gms\.vision\.text\.TextRecognizer\s*\n\s*\.Builder\(applicationContext\)\.build\(\)\s*\n\s*val ok = probe\.isOperational\s*\n\s*probe\.release\(\)\s*\n\s*ok',
-                  'true  // ML Kit v2 is bundled, so it is always ready',
-                  t)
-              t = t.replace('com.google.android.gms.vision.text.TextRecognizer', 'true')
-              kt.write_text(t)
-              changed.append('the old readiness probe is gone')
+                  r'val\s+probe\s*=\s*com\.google\.android\.gms\.vision\.text\.TextRecognizer'
+                  r'(\s*\n\s*\.Builder\([^)]*\))?'
+                  r'(\s*\n\s*\.build\(\))?',
+                  'val probe = true /* ML Kit v2 is bundled */', t)
+              # then anything that used the probe
+              t = re.sub(r'\n\s*val\s+ok\s*=\s*probe\.isOperational', '', t)
+              t = re.sub(r'\n\s*probe\.release\(\)', '', t)
+              t = re.sub(r'\n\s*if\s*\(ok\)\s*"[^"]*"\s*else\s*"[^"]*"', '', t)
+              # the try block that only existed to probe the old API collapses to true
+              t = re.sub(r'val\s+ready\s*=\s*try\s*\{\s*\n\s*val\s+probe\s*=\s*true[^}]*?\n\s*ok\s*\n\s*\}\s*catch\s*\(e:\s*Throwable\)\s*\{\s*\n\s*false\s*\n\s*\}',
+                         'val ready = true /* ML Kit v2 is bundled */', t, flags=re.S)
+              t = t.replace('val probe = true /* ML Kit v2 is bundled */\n                            ', '')
+              if t != before:
+                  kt.write_text(t)
+                  changed.append('every Mobile Vision statement is gone')
 
-          # unused channel fields
+          # 2. drop the now-unused channel fields
           for f in ('lib/glyph_map.dart', 'lib/extractors.dart'):
               p = pathlib.Path(f)
               if not p.exists(): continue
               s = p.read_text()
               before = s
-              s = s.replace("  static const MethodChannel _vision = MethodChannel('voiceleaf/vision');\n", '')
+              s = re.sub(r"\n\s*static const MethodChannel _vision = MethodChannel\('voiceleaf/vision'\);", '', s)
               if s != before:
-                  changed.append(f + ': dead channel field removed')
                   p.write_text(s)
+                  changed.append(f + ': unused channel field removed')
 
           print('CHANGED:', ', '.join(changed) if changed else 'nothing')
           PY
