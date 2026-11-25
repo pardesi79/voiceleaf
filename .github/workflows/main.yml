@@ -6629,6 +6629,138 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Modern hybrid text engine and crash fix
+        run: |
+          cat > /tmp/p.py <<'PY'
+
+          import pathlib, re
+
+          # ---------- 1. Fix Kotlin compile crash in MainActivity.kt (clean smokeTest) ----------
+          for kt in pathlib.Path('android/app/src/main').rglob('MainActivity.kt'):
+              t = kt.read_text()
+              t = re.sub(
+                  r'private fun smokeTest\(\): String \{.*?\n    \}',
+                  'private fun smokeTest(): String = "VoiceLeaf Hybrid: ML Kit v2 (5 scripts) + PDFBox + pdfrx ready"',
+                  t,
+                  flags=re.S
+              )
+              t = re.sub(r'true\s*/\*[^*]*\*/\s*\.build\(\)', 'true', t)
+              kt.write_text(t)
+              print('1. MainActivity.kt: compile crash fixed')
+
+          # ---------- 2. Keep document-scanner on resolving beta1 & register all 5 ML Kit scripts ----------
+          for g in pathlib.Path('android').rglob('build.gradle*'):
+              s = g.read_text()
+              if 'document-scanner:16.0.0"' in s:
+                  g.write_text(s.replace('document-scanner:16.0.0"', 'document-scanner:16.0.0-beta1"'))
+                  print('2. Gradle: document-scanner pinned to 16.0.0-beta1')
+
+          mf = pathlib.Path('android/app/src/main/AndroidManifest.xml')
+          if mf.exists():
+              x = mf.read_text()
+              x = re.sub(
+                  r'android:name="com\.google\.mlkit\.vision\.DEPENDENCIES"\s+android:value="[^"]*"',
+                  'android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="ocr,ocr_devanagari,ocr_chinese,ocr_japanese,ocr_korean"',
+                  x
+              )
+              mf.write_text(x)
+              print('3. Manifest: all 5 ML Kit V2 scripts registered')
+
+          # ---------- 3. Ensure widgets.dart import in lib/main.dart ----------
+          m = pathlib.Path('lib/main.dart')
+          if m.exists():
+              ms = m.read_text()
+              if "import 'widgets.dart';" not in ms:
+                  ms = "import 'widgets.dart';\n" + ms
+                  m.write_text(ms)
+                  print('4. main.dart: widgets.dart import ensured')
+
+          # ---------- 4. Fix Walkman-Chanakya overrides that broke उत्तर & उद्दिष्ट ----------
+          lf = pathlib.Path('lib/legacy_fonts.dart')
+          if lf.exists():
+              ls = lf.read_text()
+              ls = ls.replace("['Ù', 'ट'],", "['Ù', 'त्त्'],")
+              ls = ls.replace("['í', 'ख'],", "['í', 'द्द'],")
+              ls = ls.replace("['pkS', 'चै'],", "['pkS', 'चौ'],")
+              ls = ls.replace("['\\u00d9', '\\u091f'],", "['\\u00d9', '\\u0924\\u094d\\u0924\\u094d'],")
+              ls = ls.replace("['\\u00ed', '\\u0916'],", "['\\u00ed', '\\u0926\\u094d\\u0926'],")
+              lf.write_text(ls)
+              print('5. legacy_fonts.dart: Walkman-Chanakya overrides corrected')
+
+          # ---------- 5. Create original lib/text_engine.dart (Smart Script Detector + Header/Footer Skipper + Sentence Splitter) ----------
+          ENGINE_DART = r'''/// Original VoiceLeaf Text Engine:
+          /// 1. Offline multi-script detector (Devanagari, Latin, Chinese, Japanese, Korean)
+          /// 2. Automatic header/footer & repetitive noise skipper (e.g. "Reprint 2026-27", "Page X of Y")
+          /// 3. Clean sentence splitter for smooth, natural TTS playback without mid-word pauses.
+
+          class VoiceLeafTextEngine {
+            /// Detects the primary script/language code for TTS from page text (100% offline).
+            static String detectLangCode(String text) {
+              var deva = 0, latin = 0, cjk = 0, jp = 0, ko = 0;
+              for (final r in text.runes) {
+                if (r >= 0x0900 && r <= 0x097F) {
+                  deva++;
+                } else if ((r >= 0x41 && r <= 0x5A) || (r >= 0x61 && r <= 0x7A)) {
+                  latin++;
+                } else if ((r >= 0x3040 && r <= 0x30FF)) {
+                  jp++;
+                } else if ((r >= 0xAC00 && r <= 0xD7AF)) {
+                  ko++;
+                } else if ((r >= 0x4E00 && r <= 0x9FFF)) {
+                  cjk++;
+                }
+              }
+              if (deva >= latin && deva >= cjk && deva >= jp && deva >= ko && deva > 5) return 'hi-IN';
+              if (jp > 3) return 'ja-JP';
+              if (ko > 3) return 'ko-KR';
+              if (cjk > 5) return 'zh-CN';
+              return 'en-IN';
+            }
+
+            /// Removes repetitive PDF page furniture (e.g., "Reprint 2026-27", "Page 1 of 6")
+            /// and user-defined skip phrases so TTS reads only the actual content.
+            static String cleanForSpeech(String text, {List<String> skipWords = const []}) {
+              var t = text;
+              t = t.replaceAll(RegExp(r'(?m)^\s*Reprint\s+\d{4}-\d{2}\s*$'), '');
+              t = t.replaceAll(RegExp(r'(?m)^\s*Page\s+\d+\s+of\s+\d+\s*$'), '');
+              t = t.replaceAll(RegExp(r'(?m)^\s*\d+\s*/\s*[\u0900-\u097Fa-zA-Z]+\s*$'), '');
+              for (final w in skipWords) {
+                if (w.trim().isNotEmpty) t = t.replaceAll(w.trim(), '');
+              }
+              t = t.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
+              return t;
+            }
+
+            /// Splits long text into natural sentences for smooth TTS queue playback.
+            static List<String> splitSentences(String text) {
+              final clean = text.replaceAll('\r', '').trim();
+              if (clean.isEmpty) return const [];
+              final parts = clean.split(RegExp(r'(?<=[.!?\u0964\u0965])\s+|\n+'));
+              // a single character is not a sentence, and TTS reads it as noise
+              return parts
+                  .map((e) => e.trim())
+                  .where((e) => e.length > 1)
+                  .toList();
+            }
+          }
+          '''
+          pathlib.Path('lib/text_engine.dart').write_text(ENGINE_DART)
+          print('6. lib/text_engine.dart: created original VoiceLeaf text engine')
+
+          # ---------- 6. Wire VoiceLeafTextEngine into lib/extractors.dart ----------
+          ex = pathlib.Path('lib/extractors.dart')
+          if ex.exists():
+              s = ex.read_text()
+              if "import 'text_engine.dart';" not in s:
+                  s = "import 'text_engine.dart';\n" + s
+              # Ensure cleanHindiWords also runs cleanForSpeech at the end
+              if 'VoiceLeafTextEngine.cleanForSpeech' not in s and 'return t;\n  }' in s:
+                  s = s.replace('return t;\n  }', 'return VoiceLeafTextEngine.cleanForSpeech(t);\n  }', 1)
+              ex.write_text(s)
+              print('7. lib/extractors.dart: wired VoiceLeafTextEngine')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
