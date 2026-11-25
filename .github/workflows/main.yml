@@ -398,9 +398,64 @@ jobs:
               raise SystemExit(1)
 
           s = g.read_text()
-          if 'text-recognition' in s:
-              print('dependencies already present')
-              raise SystemExit(0)
+          kts = g.suffix == '.kts'
+
+          # R8 strips classes PDFBox only mentions in an optional path and then fails.
+          # Turning minification off is what the working build did, so do the same.
+          if 'isMinifyEnabled = false' not in s and 'minifyEnabled false' not in s:
+              if kts:
+                  block = '''
+          android {
+              signingConfigs {
+                  create("release") {
+                      storeFile = file("voiceleaf.jks")
+                      storePassword = "voiceleaf123"
+                      keyAlias = "voiceleaf"
+                      keyPassword = "voiceleaf123"
+                  }
+              }
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      isShrinkResources = false
+                      signingConfig = signingConfigs.getByName("release")
+                  }
+              }
+              lint {
+                  checkReleaseBuilds = false
+                  abortOnError = false
+              }
+          }
+          '''
+              else:
+                  block = '''
+          android {
+              signingConfigs {
+                  release {
+                      storeFile file("voiceleaf.jks")
+                      storePassword "voiceleaf123"
+                      keyAlias "voiceleaf"
+                      keyPassword "voiceleaf123"
+                  }
+              }
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      shrinkResources false
+                      signingConfig signingConfigs.release
+                  }
+              }
+              lintOptions {
+                  checkReleaseBuilds false
+                  abortOnError false
+              }
+          }
+          '''
+              s = s.rstrip() + '\n' + block
+              g.write_text(s)
+              print('release build type added to', g.name)
+          else:
+              print('release build type already present')
 
           names = [
               'com.google.mlkit:text-recognition:16.0.1',
@@ -412,13 +467,17 @@ jobs:
               'com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1',
           ]
 
-          # double quotes are required by the Kotlin DSL and accepted by Groovy
-          lines = ['', 'dependencies {']
-          for n in names:
-              lines.append('    implementation("' + n + '")')
-          lines.append('}')
-          g.write_text(s.rstrip() + chr(10) + chr(10).join(lines))
-          print('dependencies added to', g.name)
+          s = g.read_text()
+          if 'text-recognition' in s:
+              print('dependencies already present')
+          else:
+              # double quotes are required by the Kotlin DSL and accepted by Groovy
+              lines = ['', 'dependencies {']
+              for n in names:
+                  lines.append('    implementation("' + n + '")')
+              lines.append('}')
+              g.write_text(s.rstrip() + chr(10) + chr(10).join(lines))
+              print('dependencies added to', g.name)
           PYDEPS
 
       - name: Write the packages and the test pictures
