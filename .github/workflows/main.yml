@@ -6492,6 +6492,70 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Never pass raw legacy codes to the reader
+        run: |
+          cat > /tmp/p.py <<'PY'
+          import pathlib
+
+          changed = []
+
+          # ---- 1. the helper, next to devanagariShare in legacy_fonts.dart ----------
+          lf = pathlib.Path('lib/legacy_fonts.dart')
+          s = lf.read_text()
+          HELPER = (
+              "/// How much of the text is Latin letters. A legacy page that never got\n"
+              "/// converted is almost entirely Latin.\n"
+              "double latinShare(String t) {\n"
+              "  if (t.isEmpty) return 0;\n"
+              "  var n = 0;\n"
+              "  for (final c in t.codeUnits) {\n"
+              "    if ((c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A)) n++;\n"
+              "  }\n"
+              "  return n / t.length;\n"
+              "}\n\n"
+          )
+          anchor = 'double devanagariShare(String t) {'
+          if 'double latinShare(' not in s and anchor in s:
+              s = s.replace(anchor, HELPER + anchor, 1)
+              lf.write_text(s)
+              changed.append('latinShare helper added')
+
+          # ---- 2. never hand raw Latin to the reader -------------------------------
+          ex = pathlib.Path('lib/extractors.dart')
+          s = ex.read_text()
+
+          old = "      final turned = legacyToUnicode(whole);\n      if (devanagariShare(turned) > 0.50) {"
+          new = (
+              "      final turned = legacyToUnicode(whole);\n"
+              "      if (devanagariShare(turned) <= 0.50) {\n"
+              "        // the table did not turn this page into Devanagari: never pass the\n"
+              "        // raw Latin codes on, let the picture be read instead\n"
+              "        whole = 'ERR SHARE';\n"
+              "      } else {"
+          )
+          if old in s and 'ERR SHARE' not in s:
+              s = s.replace(old, new, 1)
+              changed.append('a page that will not convert is marked, not passed on raw')
+
+          guard = (
+              "\n    // last line of defence: a legacy page must not go out as Latin letters\n"
+              "    if (!whole.startsWith('ERR') &&\n"
+              "        whole.length > 200 &&\n"
+              "        latinShare(whole) > 0.60 &&\n"
+              "        isLegacyHindiText(whole)) {\n"
+              "      whole = 'ERR LATIN';\n"
+              "    }\n"
+          )
+          marker = '    final probe = whole.startsWith'
+          if 'ERR LATIN' not in s and marker in s:
+              s = s.replace(marker, guard + '\n' + marker, 1)
+              changed.append('a page left in Latin letters is refused too')
+
+          ex.write_text(s)
+          print('CHANGED:', ', '.join(changed) if changed else 'nothing')
+          PY
+          python3 /tmp/p.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
