@@ -6556,6 +6556,122 @@ jobs:
           PY
           python3 /tmp/p.py
 
+      - name: Master Fix - Stop Raw Latin Text, Repair Hindi Matras, and Fix Build
+        run: |
+          cat > /tmp/master_fix.py <<'PY'
+          import pathlib, re
+
+          # ---------- 1. Remove pdf_graphics & pdf_document from pubspec.yaml ----------
+          p = pathlib.Path('pubspec.yaml')
+          if p.exists():
+              lines = [l for l in p.read_text().splitlines()
+                       if 'pdf_graphics:' not in l and 'pdf_document:' not in l]
+              p.write_text('\n'.join(lines) + '\n')
+              print('1. pubspec.yaml: removed pdf_graphics & pdf_document')
+
+          # ---------- 2. Fix lib/extractors.dart (remove _fromTextLayer bypass + repair Hindi matras) ----------
+          ex = pathlib.Path('lib/extractors.dart')
+          if ex.exists():
+              s = ex.read_text()
+
+              # Drop pdf_document & pdf_graphics imports
+              s = '\n'.join(l for l in s.splitlines()
+                            if 'package:pdf_document/' not in l and 'package:pdf_graphics/' not in l) + '\n'
+
+              # Remove the _fromTextLayer call that bypassed legacy font conversion & returned raw Latin
+              s = re.sub(
+                  r"    // The words stored inside the PDF are exact; reading the picture is not\.\n"
+                  r"    final layer = await _fromTextLayer\(path, from, to\);.*?return out;\n    \}\n\n",
+                  "",
+                  s,
+                  flags=re.S
+              )
+              s = re.sub(
+                  r"    // A digital PDF carries its own words; use them and skip OCR entirely\.\n"
+                  r"    final layer = await _fromTextLayer\(path, from, to\);.*?return out;\n    \}\n\n",
+                  "",
+                  s,
+                  flags=re.S
+              )
+
+              # Remove unused _fromTextLayer & _foldMarks helpers
+              s = re.sub(
+                  r"  /// Reads the words stored inside the PDF.*?static Future<List<String>> _fromTextLayer.*?\n  \}\n\n",
+                  "",
+                  s,
+                  flags=re.S
+              )
+              s = re.sub(
+                  r"  /// Folds a vowel mark the PDF wrote twice into one\.\n  static String _foldMarks.*?\n\n",
+                  "",
+                  s,
+                  flags=re.S
+              )
+
+              # Add Devanagari matra & broken-word repair directly inside cleanHindiWords
+              matra_fix = r'''    // Re-attach detached Hindi matras/virama ("पु स्तक" -> "पुस्तक")
+              t = t.replaceAllMapped(
+                  RegExp(r'([\u0900-\u097F])\s+([\u093E-\u094D\u0901-\u0903])'),
+                  (m) => '${m[1]}${m[2]}');
+              // Rejoin hyphenated line breaks ("पुस्त-\nक" -> "पुस्तक")
+              t = t.replaceAll(RegExp(r'[-\u2010\u2011]\s*\n\s*'), '');
+              // Replace stray pipe bars with Hindi purna viram
+              t = t.replaceAll('|', '\u0964');
+          '''
+              if 'Re-attach detached Hindi matras' not in s and 'static String cleanHindiWords(String input) {' in s:
+                  s = s.replace(
+                      '    // two vowel signs cannot follow one another',
+                      matra_fix + '    // two vowel signs cannot follow one another',
+                      1
+                  )
+
+              # Ensure PDFBox text also passes through cleanHindiWords before returning
+              s = s.replace(
+                  "final body = parts[i].trim();",
+                  "final body = cleanHindiWords(parts[i]).trim();"
+              )
+
+              ex.write_text(s)
+              print('2. lib/extractors.dart: removed raw-text bypass & added Hindi matra repair')
+
+          # ---------- 3. Route lib/glyph_map.dart through ML Kit v2 instead of dead Mobile Vision ----------
+          gm = pathlib.Path('lib/glyph_map.dart')
+          if gm.exists():
+              gs = gm.read_text()
+              if "import 'extractors.dart';" not in gs:
+                  gs = "import 'extractors.dart';\n" + gs
+              gs = gs.replace(
+                  "final t = await _vision.invokeMethod<String>('page', {'path': p});",
+                  "final t = await Extractors.ocrFile(File(p), 'devanagari');"
+              )
+              gs = re.sub(r"\n\s*static const MethodChannel _vision = MethodChannel\('voiceleaf/vision'\);", '', gs)
+              gm.write_text(gs)
+              print('3. lib/glyph_map.dart: routed to ML Kit v2')
+
+          # ---------- 4. Ensure lib/main.dart imports widgets.dart (prevents Sounds compile error) ----------
+          m = pathlib.Path('lib/main.dart')
+          if m.exists():
+              ms = m.read_text()
+              if "import 'widgets.dart';" not in ms:
+                  ms = "import 'widgets.dart';\n" + ms
+                  m.write_text(ms)
+                  print('4. lib/main.dart: added widgets.dart import')
+
+          # ---------- 5. Register all 5 ML Kit scripts in AndroidManifest.xml ----------
+          mf = pathlib.Path('android/app/src/main/AndroidManifest.xml')
+          if mf.exists():
+              x = mf.read_text()
+              x = re.sub(
+                  r'android:name="com\.google\.mlkit\.vision\.DEPENDENCIES"\s+android:value="[^"]*"',
+                  'android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="ocr,ocr_devanagari,ocr_chinese,ocr_japanese,ocr_korean"',
+                  x
+              )
+              mf.write_text(x)
+              print('5. AndroidManifest.xml: registered all 5 ML Kit scripts')
+          PY
+          python3 /tmp/master_fix.py
+          flutter pub get
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
