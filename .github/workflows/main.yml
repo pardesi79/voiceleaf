@@ -6672,6 +6672,321 @@ jobs:
           python3 /tmp/master_fix.py
           flutter pub get
 
+      - name: Write the Google Drive OCR patch script
+        run: |
+          mkdir -p tool
+          cat > tool/patch_drive_ocr.py <<'PYEOF'
+          #!/usr/bin/env python3
+          """
+          All-in-one patch for Voiceleaf:
+          1. Adds google_sign_in to pubspec.yaml
+          2. Creates lib/drive_ocr.dart (Google Drive API v3 OCR with drive.file scope + auto-delete)
+          3. Creates lib/progressive_reader.dart (5-page progressive batching + offline ML Kit v2 fallback)
+          4. Adds a 'Connect Google Drive (Free OCR)' button in lib/preferences_page.dart
+          """
+          import pathlib
+
+          # ---------- 1. pubspec.yaml में google_sign_in जोड़ना ----------
+          pub = pathlib.Path('pubspec.yaml')
+          if pub.exists():
+              s = pub.read_text(encoding='utf-8')
+              if 'google_sign_in:' not in s:
+                  s = s.replace('  http: ^1.2.2', '  http: ^1.2.2\n  google_sign_in: ^6.2.1', 1)
+                  pub.write_text(s, encoding='utf-8')
+                  print('1. pubspec.yaml: added google_sign_in')
+
+          # ---------- 2. lib/drive_ocr.dart बनाना ----------
+          DRIVE_OCR_DART = r'''import 'dart:convert';
+          import 'dart:io';
+          import 'package:google_sign_in/google_sign_in.dart';
+          import 'package:http/http.dart' as http;
+
+          /// यूज़र के अपने Google Drive से मुफ़्त सर्वर-लेवल OCR (Google Docs कन्वर्जन)।
+          /// केवल drive.file स्कोप का उपयोग करता है और पढ़ने के तुरंत बाद अस्थायी फाइल डिलीट कर देता है।
+          class DriveOcr {
+            static final GoogleSignIn _signIn = GoogleSignIn(
+              scopes: <String>['https://www.googleapis.com/auth/drive.file'],
+            );
+
+            static GoogleSignInAccount? _account;
+
+            static Future<bool> isSignedIn() async {
+              try {
+                _account ??= await _signIn.signInSilently();
+                return _account != null;
+              } catch (_) {
+                return false;
+              }
+            }
+
+            static Future<bool> signIn() async {
+              try {
+                _account = await _signIn.signIn();
+                return _account != null;
+              } catch (_) {
+                return false;
+              }
+            }
+
+            static Future<void> signOut() async {
+              try {
+                await _signIn.signOut();
+              } catch (_) {}
+              _account = null;
+            }
+
+            static Future<String> ocrFile(File file, {String mimeType = 'image/png'}) async {
+              try {
+                _account ??= await _signIn.signInSilently();
+              } catch (_) {}
+              if (_account == null) return '';
+
+              final headers = await _account!.authHeaders;
+              final token = headers['Authorization'];
+              if (token == null) return '';
+
+              String? createdFileId;
+              try {
+                final bytes = await file.readAsBytes();
+                final boundary = 'voiceleaf_${DateTime.now().millisecondsSinceEpoch}';
+
+                final meta = jsonEncode({
+                  'name': 'vl_tmp_${DateTime.now().millisecondsSinceEpoch}',
+                  'mimeType': 'application/vnd.google-apps.document',
+                });
+
+                final body = <int>[]
+                  ..addAll(utf8.encode('--$boundary\r\n'))
+                  ..addAll(utf8.encode('Content-Type: application/json; charset=UTF-8\r\n\r\n'))
+                  ..addAll(utf8.encode('$meta\r\n'))
+                  ..addAll(utf8.encode('--$boundary\r\n'))
+                  ..addAll(utf8.encode('Content-Type: $mimeType\r\n\r\n'))
+                  ..addAll(bytes)
+                  ..addAll(utf8.encode('\r\n--$boundary--\r\n'));
+
+                final uploadRes = await http
+                    .post(
+                      Uri.parse('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id'),
+                      headers: {
+                        'Authorization': token,
+                        'Content-Type': 'multipart/related; boundary=$boundary',
+                      },
+                      body: body,
+                    )
+                    .timeout(const Duration(seconds: 30));
+
+                if (uploadRes.statusCode < 200 || uploadRes.statusCode >= 300) return '';
+                final parsed = jsonDecode(uploadRes.body) as Map<String, dynamic>;
+                createdFileId = parsed['id'] as String?;
+                if (createdFileId == null) return '';
+
+                final exportRes = await http
+                    .get(
+                      Uri.parse('https://www.googleapis.com/drive/v3/files/$createdFileId/export?mimeType=text/plain'),
+                      headers: {'Authorization': token},
+                    )
+                    .timeout(const Duration(seconds: 25));
+
+                if (exportRes.statusCode != 200) return '';
+                return utf8.decode(exportRes.bodyBytes, allowMalformed: true).trim();
+              } catch (_) {
+                return '';
+              } finally {
+                if (createdFileId != null) {
+                  try {
+                    await http.delete(
+                      Uri.parse('https://www.googleapis.com/drive/v3/files/$createdFileId'),
+                      headers: {'Authorization': token},
+                    );
+                  } catch (_) {}
+                }
+              }
+            }
+          }
+          '''
+          pathlib.Path('lib/drive_ocr.dart').write_text(DRIVE_OCR_DART, encoding='utf-8')
+          print('2. lib/drive_ocr.dart written')
+
+          # ---------- 3. lib/progressive_reader.dart बनाना ----------
+          PROG_DART = r'''import 'dart:io';
+          import 'package:path_provider/path_provider.dart';
+          import 'package:pdfx/pdfx.dart';
+          import 'drive_ocr.dart';
+          import 'extractors.dart';
+          import 'models.dart';
+          import 'storage.dart';
+
+          /// 5-5 पेज के बैच में PDF पढ़ने वाला प्रोग्रेसिव इंजन।
+          /// पहले 5 पेज तैयार होते ही ऑडियो शुरू हो जाता है और बाकी पेज बैकग्राउंड में जुड़ते रहते हैं।
+          class ProgressivePdfReader {
+            static const int batchSize = 5;
+
+            static Future<void> openAndStream({
+              required String pdfPath,
+              required String title,
+              required String ocrMode,
+              required int fromPage,
+              required int toPage,
+              required bool pageNumbers,
+              required void Function(String status) onStatus,
+              required void Function(Book book) onFirstBatchReady,
+              required void Function(Book book) onBookUpdated,
+            }) async {
+              final useDrive = await DriveOcr.isSignedIn();
+              final firstEnd = (fromPage + batchSize - 1).clamp(fromPage, toPage);
+
+              onStatus('Reading pages $fromPage to $firstEnd...');
+              final firstPages = await _processRange(
+                pdfPath: pdfPath,
+                from: fromPage,
+                to: firstEnd,
+                ocrMode: ocrMode,
+                useDrive: useDrive,
+                pageNumbers: pageNumbers,
+                onStatus: onStatus,
+              );
+
+              final book = Book(
+                id: DateTime.now().millisecondsSinceEpoch.toString(),
+                title: title,
+                pages: List<String>.from(firstPages),
+              );
+              await Storage.save(book);
+              onFirstBatchReady(book);
+
+              if (firstEnd < toPage) {
+                _processRemainingInBackground(
+                  book: book,
+                  pdfPath: pdfPath,
+                  startPage: firstEnd + 1,
+                  toPage: toPage,
+                  ocrMode: ocrMode,
+                  useDrive: useDrive,
+                  pageNumbers: pageNumbers,
+                  onBookUpdated: onBookUpdated,
+                );
+              }
+            }
+
+            static Future<void> _processRemainingInBackground({
+              required Book book,
+              required String pdfPath,
+              required int startPage,
+              required int toPage,
+              required String ocrMode,
+              required bool useDrive,
+              required bool pageNumbers,
+              required void Function(Book book) onBookUpdated,
+            }) async {
+              var cur = startPage;
+              while (cur <= toPage) {
+                final end = (cur + batchSize - 1).clamp(cur, toPage);
+                final batch = await _processRange(
+                  pdfPath: pdfPath,
+                  from: cur,
+                  to: end,
+                  ocrMode: ocrMode,
+                  useDrive: useDrive,
+                  pageNumbers: pageNumbers,
+                  onStatus: (_) {},
+                );
+                if (batch.isNotEmpty) {
+                  book.pages.addAll(batch);
+                  await Storage.save(book);
+                  onBookUpdated(book);
+                }
+                cur = end + 1;
+              }
+            }
+
+            static Future<List<String>> _processRange({
+              required String pdfPath,
+              required int from,
+              required int to,
+              required String ocrMode,
+              required bool useDrive,
+              required bool pageNumbers,
+              required void Function(String) onStatus,
+            }) async {
+              final doc = await PdfDocument.openFile(pdfPath);
+              final tmp = await getTemporaryDirectory();
+              final out = <String>[];
+              try {
+                for (var i = from; i <= to; i++) {
+                  onStatus('Page $i of $to...');
+                  final page = await doc.getPage(i);
+                  final shot = await page.render(
+                    width: page.width * 2,
+                    height: page.height * 2,
+                    format: PdfPageImageFormat.png,
+                    backgroundColor: '#FFFFFF',
+                  );
+                  await page.close();
+                  if (shot == null || shot.bytes.isEmpty) continue;
+
+                  final imgFile = File('${tmp.path}/vl_pg_$i.png');
+                  await imgFile.writeAsBytes(shot.bytes);
+
+                  String text = '';
+                  if (useDrive) {
+                    text = await DriveOcr.ocrFile(imgFile, mimeType: 'image/png');
+                  }
+                  if (text.trim().isEmpty) {
+                    text = await Extractors.ocrFile(imgFile, ocrMode);
+                  }
+                  await imgFile.delete();
+
+                  final clean = Extractors.cleanHindiWords(text).trim();
+                  if (clean.isNotEmpty) {
+                    out.add(pageNumbers ? 'Page $i.\n$clean' : clean);
+                  }
+                }
+              } finally {
+                await doc.close();
+              }
+              return out;
+            }
+          }
+          '''
+          pathlib.Path('lib/progressive_reader.dart').write_text(PROG_DART, encoding='utf-8')
+          print('3. lib/progressive_reader.dart written')
+
+          # ---------- 4. lib/preferences_page.dart में Google Drive Sign-In बटन जोड़ना ----------
+          pp = pathlib.Path('lib/preferences_page.dart')
+          if pp.exists():
+              ps = pp.read_text(encoding='utf-8')
+              if "import 'drive_ocr.dart';" not in ps:
+                  ps = "import 'drive_ocr.dart';\n" + ps
+              if 'Connect Google Drive (Free OCR)' not in ps:
+                  btn = """            Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: OutlinedButton.icon(
+                          icon: const Icon(Icons.cloud_done),
+                          label: const Text('Connect Google Drive (Free OCR)'),
+                          onPressed: () async {
+                            final ok = await DriveOcr.signIn();
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(ok
+                                    ? 'Google Drive connected for high-accuracy OCR.'
+                                    : 'Google Sign-In cancelled or not configured.'),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+          """
+                  anchor = "            Padding(\n              padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),"
+                  if anchor in ps:
+                      ps = ps.replace(anchor, btn + anchor, 1)
+                      pp.write_text(ps, encoding='utf-8')
+                      print('4. lib/preferences_page.dart: Google Drive Sign-In button added')
+          PYEOF
+
+      - name: Add Google Drive OCR and 5-page progressive reader
+        run: python3 tool/patch_drive_ocr.py
+
       - name: Build the APK
         run: flutter build apk --release --split-per-abi --build-number=${{ github.run_number }}
 
